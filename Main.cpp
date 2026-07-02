@@ -37,6 +37,25 @@ SYRINGE_HANDSHAKE(pInfo)
     g_MapMaxH          = cfg.MaxHeight;
     g_MapMaxDimension  = cfg.MaxDimension;
 
+    // ----------------------------------------------------------------
+    //  IsoMapPack5 line count limit extension
+    //  Discovered by E1 Elite (PPM), YR file offsets confirmed by
+    //  binary inspection of gamemd.exe 1.001.
+    //
+    //  Original values (same as TS):
+    //    VA 0x4AD344: WORD 0x0190 (400)  - LZO buffer dimension 1
+    //    VA 0x4AD349: WORD 0x0280 (640)  - LZO buffer dimension 2
+    //    VA 0x4AD358: WORD 0x07D0 (2000) - IsoMapPack5 line count limit
+    //
+    //  When a map's IsoMapPack5 section exceeds ~9750 lines the engine
+    //  stops decoding and fills remaining cells with blank height-0
+    //  tiles. Raising to ~3x gives headroom for large maps (~29k lines).
+    //  These are simple WORD patches - no hook trampoline needed.
+    // ----------------------------------------------------------------
+    *reinterpret_cast<WORD*>(0x4AD344) = 0x0300;  // 400  -> 768
+    *reinterpret_cast<WORD*>(0x4AD349) = 0x0400;  // 640  -> 1024
+    *reinterpret_cast<WORD*>(0x4AD358) = 0x1800;  // 2000 -> 6144
+
     // Debug log to game directory
     char logPath[MAX_PATH];
     GetModuleFileNameA(nullptr, logPath, MAX_PATH);
@@ -55,6 +74,9 @@ SYRINGE_HANDSHAKE(pInfo)
         fprintf(f, "MaxHeight   = %d\n", g_MapMaxH);
         fprintf(f, "MaxDimension= %d\n", g_MapMaxDimension);
         fprintf(f, "NOTE: No W+H sum check exists in engine - W and H are gated independently\n");
+        fprintf(f, "IsoMapPack5 buffer 1 @ 0x4AD344: patched 400->768\n");
+        fprintf(f, "IsoMapPack5 buffer 2 @ 0x4AD349: patched 640->1024\n");
+        fprintf(f, "IsoMapPack5 lines    @ 0x4AD358: patched 2000->6144 (~29k line cap)\n");
         fprintf(f, "Hooks: operator[] stride @ 0x%X\n", ADDR_OPERATOR_BRACKET_SHL);
         fprintf(f, "Hooks: operator[] bounds @ 0x%X\n", ADDR_OPERATOR_BRACKET_CMP);
         fprintf(f, "Hooks: alloc stride 1    @ 0x%X\n", ADDR_ALLOC_SHL_1);
