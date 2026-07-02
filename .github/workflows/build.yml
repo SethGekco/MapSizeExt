@@ -1,0 +1,36 @@
+name: Build MapSizeExt
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2019
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Build Release
+      run: |
+        msbuild MapSizeExt.vcxproj `
+          /p:Configuration=Release `
+          /p:Platform=Win32 `
+          /p:SolutionDir="${{ github.workspace }}\" `
+          /m
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: MapSizeExt
+        path: bin/Release/MapSizeExt.dll
+        if-no-files-found: error
