@@ -1,5 +1,6 @@
 #include "MapSizeExt.h"
 #include "Config.h"
+#include "Patches.h"
 #include <Syringe.h>
 #include <windows.h>
 #include <cstdio>
@@ -100,7 +101,16 @@ SYRINGE_HANDSHAKE(pInfo)
                 ADDR_ALLOC_DIM_LOAD, ADDR_ALLOC_SHL_2, ADDR_INLINE_CELL_SHL);
         fprintf(f, "Dimension gates: 0x%X 0x%X 0x%X\n",
                 ADDR_DIMGATE_SITE1, ADDR_DIMGATE_SITE2, ADDR_DIMGATE_SITE3);
+
+        // Phase 2: sight/radar/distance stride sites (no-op at 512).
+        ApplyStridePatches(f);
+
         fclose(f);
+    }
+    else
+    {
+        // Still apply stride patches even if the log couldn't be opened.
+        ApplyStridePatches(nullptr);
     }
 
     return S_OK;
