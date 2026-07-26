@@ -4,161 +4,174 @@
 #include <windows.h>
 
 // ============================================================
-//  Hooks.cpp
-//  Patches the three minimum-viable sites for map size.
+//  Hooks.cpp  -  Phase 1: cell-grid stride, bounds and the
+//  per-axis dimension gate.
 //
-//  PHASE 1 (this file):
-//    Hook A - MapClass::operator[] stride + bounds check
-//    Hook B - Heap allocation size
-//    Hook C - Inline cell array access stride
+//  IMPORTANT register API note:
+//    This YRpp exposes registers as METHODS on REGISTERS* R:
+//      read : R->EAX(), R->EAX<int>()
+//      write: R->EAX(value)
+//    (NOT `R->EAX = value` - that does not compile.)
 //
-//  All other sites (sight reveal cluster, radar, lepton
-//  operator[]) are tagged VERIFY and left as-is for now.
-//  The game will crash on large maps until those are patched,
-//  but on a standard 512-stride map this DLL should be a no-op.
+//  Syringe hook return semantics:
+//    The `size` bytes at the hook address are overwritten with a
+//    5-byte JMP + NOP padding. The address you `return` must NOT
+//    fall inside [hook, hook+size) or you land in the trampoline.
+//    Return an address >= hook+size, or a completely different one.
+//
+//  On a standard 512-stride map every hook below reduces to the
+//  original behaviour, so the DLL is a no-op until the INI raises
+//  Stride / MaxDimension above 512.
 // ============================================================
 
-// Global runtime values - set in SyringeHandshake
-int g_MapStride = 512;
-int g_MapTotal  = 262144;   // 512 * 512
-int g_MapMaxW   = 512;
-int g_MapMaxH   = 512;
+// Global runtime values - set in SyringeHandshake (Main.cpp)
+int g_MapStride       = 512;
+int g_MapTotal        = 262144;  // 512 * 512
+int g_MapMaxW         = 512;
+int g_MapMaxH         = 512;
+int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
 
 // ============================================================
-//  HOOK A: MapClass::operator[] (Cell& version)
-//  Original:
-//    5656EA: shl eax, 0x9        ; Y * 512
-//    5656ED: add eax, ecx        ; + X
-//    5656EF: js  0x565709        ; negative -> fallback
-//    5656F1: cmp eax, 0x40000    ; >= 262144 -> fallback
+//  HOOK A: MapClass::operator[](Cell&)  @ 0x5656EA (7 bytes)
+//    5656EA: shl eax,0x9      Y * 512      \
+//    5656ED: add eax,ecx      + X           } 7 stolen bytes
+//    5656EF: js  0x565709     negative     /
+//    5656F1: cmp eax,0x40000  (not stolen - we fold it in)
 //    5656F6: jge 0x565709
-//
-//  We replace at 5656EA: compute Y * g_MapStride + X,
-//  then check against g_MapTotal.
-//
-//  Hook entry: eax = Y (sign-extended), ecx = X (sign-extended)
-//  We have 7 bytes available before the 'js' at 5656EF.
-//  Strategy: hook at 5656EA, replace shl+add with a call
-//  to our function, return the index in eax.
-//
-//  VERIFY: confirm register state at entry matches assumption.
-//  If the game crashes here on load, check eax/ecx values
-//  in a debugger at 0x5656EA.
+//    5656F8: mov edx,[esp+8]  <- resume target on success
+//  Entry: eax = Y (movsx), ecx = X (movsx).
 // ============================================================
-
 DEFINE_HOOK(0x5656EA, MapClass_OperatorBracket_Stride, 7)
 {
-    // At entry: eax = Y (movsx from word), ecx = X (movsx from word)
-    // Original did: eax = (eax << 9) + ecx
-    // We do:        eax = (eax * g_MapStride) + ecx
-    GET_STACK(int, Y, 0x4);   // VERIFY: adjust offset if wrong
-    GET_STACK(int, X, 0x0);   // VERIFY: adjust offset if wrong
-
-    // Read directly from registers via R macro
-    int y = R->EAX;
-    int x = R->ECX;
-
+    int y = R->EAX<int>();
+    int x = R->ECX<int>();
     int index = y * g_MapStride + x;
+    R->EAX(index);
 
-    // Replicate the 'js' (negative index) check
-    if (index < 0)
-    {
-        R->EAX = index;
-        // Jump to the fallback at 0x565709
-        return 0x565709;
-    }
-
-    R->EAX = index;
-
-    // Fall through to the cmp at 5656F1 - but we patch that too below,
-    // so skip it and do the check here, jump past it to 5656F8.
-    if (index >= g_MapTotal)
-        return 0x565709;    // fallback sentinel
-
-    return 0x5656F8;        // skip original cmp/jge, go straight to array load
+    if (index < 0)             return 0x565709;  // js  (negative)
+    if (index >= g_MapTotal)   return 0x565709;  // cmp/jge (out of bounds)
+    return 0x5656F8;                             // valid -> array load
 }
 
 // ============================================================
-//  HOOK B: Heap allocation sized by N * 512
-//  Original at 0x48EB18:
-//    mov  edx, [esi+0x16c]   ; load dimension N
-//    shl  edx, 0x9           ; N * 512  <- we hook here
-//    push edx
-//    call 0x7C8E17           ; malloc(N * 512)
-//
-//  We replace shl edx,0x9 with edx * g_MapStride.
-//  6 bytes available (shl is 3 bytes, push is 1, but we
-//  hook at the shl so we have its 3 bytes + next instruction).
-//
-//  VERIFY: confirm [esi+0x16c] is actually the map height
-//  and not something else. Check what value edx holds here
-//  on a standard map load (expect 512 or map height value).
+//  HOOK B1: shroud/visibility buffer alloc  @ 0x48EB12 (6 bytes)
+//    48EB12: mov edx,[esi+0x16c]   dimension N   \ 6 stolen bytes
+//    48EB18: shl edx,0x9           N * 512       (skipped)
+//    48EB1B: push edx              <- resume target
+//    48EB1C: call malloc
+//  We fold mov+shl into `edx = [esi+0x16c] * stride` and jump
+//  past the original shl to the push.
+//  (The old hook sat on the 3-byte shl and returned 0x48EB1B,
+//   which is inside the 6-byte trampoline -> guaranteed crash.)
 // ============================================================
-
-DEFINE_HOOK(0x48EB18, MapClass_Alloc_Stride1, 6)
+DEFINE_HOOK(0x48EB12, MapClass_Alloc_Stride1, 6)
 {
-    // edx = map dimension loaded from [esi+0x16c]
-    // original: edx <<= 9  (multiply by 512)
-    // ours:     edx *= g_MapStride
-    R->EDX = R->EDX * g_MapStride;
-
-    // Resume at push edx (0x48EB1B)
-    return 0x48EB1B;
+    int dim = *reinterpret_cast<int*>(R->ESI() + 0x16C);
+    R->EDX(dim * g_MapStride);
+    return 0x48EB1B;  // push edx
 }
 
-DEFINE_HOOK(0x48EB35, MapClass_Alloc_Stride2, 6)
+// ============================================================
+//  HOOK B2: mid-row pointer  @ 0x48EB35 (5 bytes)
+//    48EB35: shl ecx,0x9      ((N-1)>>1) * 512  \ 5 stolen bytes
+//    48EB38: add ecx,eax      + buffer base     /
+//    48EB3A: mov [esi+0x174],ecx   <- resume target
+//  eax = malloc result from B1. Fold shl+add together.
+// ============================================================
+DEFINE_HOOK(0x48EB35, MapClass_Alloc_Stride2, 5)
 {
-    // ecx = (map_height - 1) >> 1  (half-dimension calculation)
-    // original: ecx <<= 9
-    // ours:     ecx *= g_MapStride
-    R->ECX = R->ECX * g_MapStride;
-
-    // Resume at whatever follows (0x48EB38)
-    // VERIFY: check what instruction is at 0x48EB38
-    return 0x48EB38;
+    R->ECX(R->ECX() * g_MapStride + R->EAX());
+    return 0x48EB3A;  // mov [esi+0x174],ecx
 }
 
 // ============================================================
-//  HOOK C: Inline cell array access via global 0x87F924
-//  Original at 0x483B32:
-//    movsx edi, [esi+0x26]   ; Y
-//    movsx ecx, [esi+0x24]   ; X
-//    shl   edi, 0x9          ; Y * 512  <- hook here
-//    add   edi, ecx          ; + X = index
-//    mov   ecx, [eax+edi*4]  ; Array[index]
-//
-//  VERIFY: confirm edi=Y, ecx=X at entry.
+//  HOOK C: inline cell access via global 0x87F924 @ 0x483B32 (6 bytes)
+//    483B32: shl edi,0x9            Y * 512       \ 6 stolen bytes
+//    483B35: mov [esi+0xfc],ebx     (first 3 of 6) /  (must replicate)
+//    483B3B: mov eax,ds:0x87f924    <- resume target (global cell array)
+//    483B40: add edi,ecx            + X   (runs normally)
+//    483B42: mov ecx,[eax+edi*4]    Array[index]
+//  We must NOT jump straight to 483B42: that would skip the load of
+//  the global array pointer into eax and the [esi+0xfc]=ebx store.
+//  Instead: apply the stride, replicate the stolen store, and resume
+//  at 483B3B so the original global load + add edi,ecx still run.
+//  (Note: X is added later at 483B40, so do NOT add ecx here.)
 // ============================================================
-
 DEFINE_HOOK(0x483B32, MapClass_InlineAccess_Stride, 6)
 {
-    // edi = Y, ecx = X (both movsx'd from word fields)
-    R->EDI = R->EDI * g_MapStride + R->ECX;
-
-    // Resume at: add edi, ecx -- but we already did the add,
-    // so skip to mov ecx,[eax+edi*4] at 0x483B42
-    // VERIFY: confirm 0x483B42 is 'mov ecx,[eax+edi*4]'
-    return 0x483B42;
+    R->EDI(R->EDI<int>() * g_MapStride);                    // shl edi,0x9
+    *reinterpret_cast<int*>(R->ESI() + 0xFC) = R->EBX();    // mov [esi+0xfc],ebx
+    return 0x483B3B;                                        // mov eax,ds:0x87f924
 }
 
 // ============================================================
-//  NOTE: Lepton operator[] at 0x565757
-//  The bound check there reads [ecx+0x140] dynamically,
-//  so only the stride needs patching.
-//  VERIFY: is [ecx+0x140] actually updated to reflect
-//  g_MapTotal somewhere, or is it set from a map INI value?
-//  If it reads MapCellWidth*MapCellHeight (playable area)
-//  rather than total grid size, it may already be correct
-//  and only the stride at 0x565757 needs a hook.
+//  HOOK D: MapClass::operator[](lepton)  @ 0x565757 (5 bytes)
+//    565757: shl edx,0x9   Y * 512   \ 5 stolen bytes
+//    56575A: add edx,esi   + X       /
+//    56575C: js 0x56577a   <- resume target
+//  Bound check at 56575E reads [ecx+0x140] (dynamic) so only the
+//  stride needs patching. (Old hook used size 6 and returned
+//  0x56575C, which was inside the trampoline.)
+// ============================================================
+DEFINE_HOOK(0x565757, MapClass_LeptonOp_Stride, 5)
+{
+    R->EDX(R->EDX<int>() * g_MapStride + R->ESI<int>());
+    return 0x56575C;  // js 0x56577a
+}
+
+// ============================================================
+//  HOOK E: IsCellValid  @ 0x5657F1 (5 bytes)
+//    5657F1: shl edx,0x9   Y * 512   \ 5 stolen bytes
+//    5657F4: add edx,eax   + X       /
+//    5657F6: cmp [ecx+edx*4],0x0   <- resume target
+//  (This site was listed as "hooked" in the research notes but
+//   had no actual DEFINE_HOOK; without it IsCellValid mis-indexes
+//   on any stride != 512.)
+// ============================================================
+DEFINE_HOOK(0x5657F1, IsCellValid_Stride, 5)
+{
+    R->EDX(R->EDX<int>() * g_MapStride + R->EAX<int>());
+    return 0x5657F6;  // cmp [ecx+edx*4],0x0
+}
+
+// ============================================================
+//  MAP DIMENSION GATE HOOKS
+//  Three sites reject a map when W >= 512 or H >= 512, checked
+//  independently (there is NO W+H sum check in the engine).
+//  We hook the width test, redo both compares against
+//  g_MapMaxDimension, and branch to the site's own reject/accept.
+//  ax = Width, cx = Height at every site.
+//
+//  Note: the accept path skips the engine's minimum-dimension
+//  re-check for height (cmp cx,bp/bx). That guard only rejects
+//  degenerate sub-~4-cell maps, which a map-enlarging mod never
+//  produces, so the simplification is safe here.
 // ============================================================
 
-DEFINE_HOOK(0x565757, MapClass_LeptonOp_Stride, 6)
+// Site 1: hook the 6-byte `jge 0x4C588B` at 0x4C5630.
+//   reject -> 0x4C588B, accept -> 0x4C564A
+DEFINE_HOOK(0x4C5630, MapDimGate_Site1, 6)
 {
-    // edx = Y (sar'd from coord), esi = X (sar'd from coord)
-    // original: shl edx,0x9 ; add edx,esi
-    R->EDX = R->EDX * g_MapStride + R->ESI;
+    if ((short)R->AX() >= (short)g_MapMaxDimension) return 0x4C588B;
+    if ((short)R->CX() >= (short)g_MapMaxDimension) return 0x4C588B;
+    return 0x4C564A;
+}
 
-    // Skip to: js 0x56577a (which follows add edx,esi at 0x56575A)
-    // VERIFY: confirm 0x56575C is 'js 0x56577a'
-    return 0x56575C;
+// Site 2: `jge` here is a 2-byte short jump, so hook the
+//   `cmp ax,0x200` (4) + short jge (2) = 6 bytes at 0x4C590E.
+//   reject -> 0x4C5972, accept -> 0x4C5920
+DEFINE_HOOK(0x4C590E, MapDimGate_Site2, 6)
+{
+    if ((short)R->AX() >= (short)g_MapMaxDimension) return 0x4C5972;
+    if ((short)R->CX() >= (short)g_MapMaxDimension) return 0x4C5972;
+    return 0x4C5920;
+}
+
+// Site 3: hook the 6-byte `jge 0x554CE4` at 0x554BC5.
+//   reject -> 0x554CE4, accept -> 0x554BDF
+DEFINE_HOOK(0x554BC5, MapDimGate_Site3, 6)
+{
+    if ((short)R->AX() >= (short)g_MapMaxDimension) return 0x554CE4;
+    if ((short)R->CX() >= (short)g_MapMaxDimension) return 0x554CE4;
+    return 0x554BDF;
 }
