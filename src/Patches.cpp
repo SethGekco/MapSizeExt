@@ -29,8 +29,10 @@ static const DWORD kStrideSites[] =
     // --- Extra sight row calc ---
     0x547DC7,
 
-    // --- Radar / minimap buffer stride ---
-    0x53D49E,
+    // NOTE: 0x53D49E (radar/minimap) is DELIBERATELY EXCLUDED. It is the
+    // stride of the FIXED-size radar image buffer, not the cell grid;
+    // patching it to x1024 overruns that buffer -> crash @0x53D4A8
+    // (mov [edx+edi],al) with ecx = 96*1024 = 0x18000. Confirmed in-game.
 
     // --- Two-cell distance / path index ---
     0x429AB1, 0x429AC2,
