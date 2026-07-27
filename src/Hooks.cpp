@@ -41,7 +41,7 @@ int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
 //    5656F8: mov edx,[esp+8]  <- resume target on success
 //  Entry: eax = Y (movsx), ecx = X (movsx).
 // ============================================================
-DEFINE_HOOK(0x5656EA, MapClass_OperatorBracket_Stride, 7)
+DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 {
     int y = R->EAX<int>();
     int x = R->ECX<int>();
@@ -64,7 +64,7 @@ DEFINE_HOOK(0x5656EA, MapClass_OperatorBracket_Stride, 7)
 //  (The old hook sat on the 3-byte shl and returned 0x48EB1B,
 //   which is inside the 6-byte trampoline -> guaranteed crash.)
 // ============================================================
-DEFINE_HOOK(0x48EB12, MapClass_Alloc_Stride1, 6)
+DEFINE_HOOK(48EB12, MapClass_Alloc_Stride1, 6)
 {
     int dim = *reinterpret_cast<int*>(R->ESI() + 0x16C);
     R->EDX(dim * g_MapStride);
@@ -78,7 +78,7 @@ DEFINE_HOOK(0x48EB12, MapClass_Alloc_Stride1, 6)
 //    48EB3A: mov [esi+0x174],ecx   <- resume target
 //  eax = malloc result from B1. Fold shl+add together.
 // ============================================================
-DEFINE_HOOK(0x48EB35, MapClass_Alloc_Stride2, 5)
+DEFINE_HOOK(48EB35, MapClass_Alloc_Stride2, 5)
 {
     R->ECX(R->ECX() * g_MapStride + R->EAX());
     return 0x48EB3A;  // mov [esi+0x174],ecx
@@ -97,7 +97,7 @@ DEFINE_HOOK(0x48EB35, MapClass_Alloc_Stride2, 5)
 //  at 483B3B so the original global load + add edi,ecx still run.
 //  (Note: X is added later at 483B40, so do NOT add ecx here.)
 // ============================================================
-DEFINE_HOOK(0x483B32, MapClass_InlineAccess_Stride, 6)
+DEFINE_HOOK(483B32, MapClass_InlineAccess_Stride, 6)
 {
     R->EDI(R->EDI<int>() * g_MapStride);                    // shl edi,0x9
     *reinterpret_cast<int*>(R->ESI() + 0xFC) = R->EBX();    // mov [esi+0xfc],ebx
@@ -113,7 +113,7 @@ DEFINE_HOOK(0x483B32, MapClass_InlineAccess_Stride, 6)
 //  stride needs patching. (Old hook used size 6 and returned
 //  0x56575C, which was inside the trampoline.)
 // ============================================================
-DEFINE_HOOK(0x565757, MapClass_LeptonOp_Stride, 5)
+DEFINE_HOOK(565757, MapClass_LeptonOp_Stride, 5)
 {
     R->EDX(R->EDX<int>() * g_MapStride + R->ESI<int>());
     return 0x56575C;  // js 0x56577a
@@ -128,7 +128,7 @@ DEFINE_HOOK(0x565757, MapClass_LeptonOp_Stride, 5)
 //   had no actual DEFINE_HOOK; without it IsCellValid mis-indexes
 //   on any stride != 512.)
 // ============================================================
-DEFINE_HOOK(0x5657F1, IsCellValid_Stride, 5)
+DEFINE_HOOK(5657F1, IsCellValid_Stride, 5)
 {
     R->EDX(R->EDX<int>() * g_MapStride + R->EAX<int>());
     return 0x5657F6;  // cmp [ecx+edx*4],0x0
@@ -150,7 +150,7 @@ DEFINE_HOOK(0x5657F1, IsCellValid_Stride, 5)
 
 // Site 1: hook the 6-byte `jge 0x4C588B` at 0x4C5630.
 //   reject -> 0x4C588B, accept -> 0x4C564A
-DEFINE_HOOK(0x4C5630, MapDimGate_Site1, 6)
+DEFINE_HOOK(4C5630, MapDimGate_Site1, 6)
 {
     if ((short)R->AX() >= (short)g_MapMaxDimension) return 0x4C588B;
     if ((short)R->CX() >= (short)g_MapMaxDimension) return 0x4C588B;
@@ -160,7 +160,7 @@ DEFINE_HOOK(0x4C5630, MapDimGate_Site1, 6)
 // Site 2: `jge` here is a 2-byte short jump, so hook the
 //   `cmp ax,0x200` (4) + short jge (2) = 6 bytes at 0x4C590E.
 //   reject -> 0x4C5972, accept -> 0x4C5920
-DEFINE_HOOK(0x4C590E, MapDimGate_Site2, 6)
+DEFINE_HOOK(4C590E, MapDimGate_Site2, 6)
 {
     if ((short)R->AX() >= (short)g_MapMaxDimension) return 0x4C5972;
     if ((short)R->CX() >= (short)g_MapMaxDimension) return 0x4C5972;
@@ -169,7 +169,7 @@ DEFINE_HOOK(0x4C590E, MapDimGate_Site2, 6)
 
 // Site 3: hook the 6-byte `jge 0x554CE4` at 0x554BC5.
 //   reject -> 0x554CE4, accept -> 0x554BDF
-DEFINE_HOOK(0x554BC5, MapDimGate_Site3, 6)
+DEFINE_HOOK(554BC5, MapDimGate_Site3, 6)
 {
     if ((short)R->AX() >= (short)g_MapMaxDimension) return 0x554CE4;
     if ((short)R->CX() >= (short)g_MapMaxDimension) return 0x554CE4;
