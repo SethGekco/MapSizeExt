@@ -93,3 +93,58 @@ int ApplyStridePatches(FILE* log)
     if (log) fprintf(log, "[stride] patched %d / %d sites\n", patched, count);
     return patched;
 }
+
+// ============================================================
+//  Cell-array size limit (262144 = 0x40000 = 512*512).
+//  The engine inlines `cmp eax,0x40000` bounds checks all over
+//  (~405 sites) plus the VectorClass reserve `push 0x40000`
+//  @0x565B87. All must rise to stride*stride for a >512 grid.
+//
+//  We scan .text for the two instruction forms and rewrite the
+//  0x40000 immediate to g_MapTotal. NO-OP at stride 512
+//  (g_MapTotal stays 0x40000). This runs inside SyringeHandshake,
+//  BEFORE Syringe installs its trampolines, so .text is pristine.
+//
+//  Forms handled:
+//    3D 00 00 04 00   cmp eax,0x40000
+//    68 00 00 04 00   push 0x40000
+// ============================================================
+int ApplyBoundsPatches(FILE* log)
+{
+    const DWORD newTotal = (DWORD)g_MapTotal;
+    if (newTotal == 0x40000)
+    {
+        if (log) fprintf(log, "[bounds] cell-array limit stays 0x40000 (stride 512)  [no-op]\n");
+        return 0;
+    }
+
+    const DWORD tStart = 0x00401000;   // .text start
+    const DWORD tEnd   = 0x007E038D;   // .text end (VA)
+    int cmpN = 0, pushN = 0;
+
+    for (DWORD va = tStart; va < tEnd - 5; )
+    {
+        const BYTE op = *reinterpret_cast<BYTE*>(va);
+        if ((op == 0x3D || op == 0x68) &&
+            *reinterpret_cast<DWORD*>(va + 1) == 0x00040000)
+        {
+            DWORD oldProt = 0;
+            void* p = reinterpret_cast<void*>(va + 1);
+            if (VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt))
+            {
+                *reinterpret_cast<DWORD*>(va + 1) = newTotal;
+                VirtualProtect(p, 4, oldProt, &oldProt);
+                if (op == 0x3D) ++cmpN; else ++pushN;
+            }
+            va += 5;
+        }
+        else
+        {
+            va += 1;
+        }
+    }
+
+    if (log) fprintf(log, "[bounds] 0x40000 -> 0x%X : cmp eax=%d, push=%d (total %d)\n",
+                     newTotal, cmpN, pushN, cmpN + pushN);
+    return cmpN + pushN;
+}

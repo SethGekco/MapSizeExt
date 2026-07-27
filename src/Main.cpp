@@ -102,15 +102,17 @@ SYRINGE_HANDSHAKE(pInfo)
         fprintf(f, "Dimension gates: 0x%X 0x%X 0x%X\n",
                 ADDR_DIMGATE_SITE1, ADDR_DIMGATE_SITE2, ADDR_DIMGATE_SITE3);
 
-        // Phase 2: sight/radar/distance stride sites (no-op at 512).
+        // Phase 2: sight/radar/distance stride sites + cell-array size
+        // limits (both no-op at 512).
         ApplyStridePatches(f);
+        ApplyBoundsPatches(f);
 
         fclose(f);
     }
     else
     {
-        // Still apply stride patches even if the log couldn't be opened.
         ApplyStridePatches(nullptr);
+        ApplyBoundsPatches(nullptr);
     }
 
     return S_OK;

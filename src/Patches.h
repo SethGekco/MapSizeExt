@@ -22,3 +22,9 @@
 // stride site to match g_MapStride. Writes a report to `log` (may be
 // null). Returns the number of sites successfully patched.
 int ApplyStridePatches(FILE* log);
+
+// Rewrites every cell-array size limit (0x40000 = 512*512) in .text --
+// the inlined `cmp eax,0x40000` bounds checks and the `push 0x40000`
+// VectorClass reserve -- to g_MapTotal (stride*stride). NO-OP at stride
+// 512. Returns the number of immediates patched.
+int ApplyBoundsPatches(FILE* log);
