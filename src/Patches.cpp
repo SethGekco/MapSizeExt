@@ -161,6 +161,13 @@ int ApplyBoundsPatches(FILE* log, bool patchCmp)
     const DWORD tEnd   = 0x007E038D;   // .text end (VA)
     int cmpN = 0, pushN = 0, cmpSkip = 0;
 
+    // Of the 405 `cmp eax,0x40000` sites, 401 are followed by a cell-array
+    // `[reg+eax*4]` access (genuine cell-index bound checks -> must rise).
+    // These 4 are NOT (they compare a count/pointer, i.e. 256 KB buffer or
+    // capacity fields) and corrupt state if bumped -> the Ares null-singleton
+    // crash. Always skip them even when patchCmp is on.
+    const DWORD kCmpSkip[] = { 0x565B73, 0x568710, 0x5687A7, 0x568B58 };
+
     // WARNING: 0x40000 is BOTH 512*512 (cell-array size) AND 256 KB, a very
     // common buffer/allocation constant. Blindly rewriting every `cmp
     // eax,0x40000` corrupts unrelated 256 KB buffers. The `push 0x40000`
@@ -175,6 +182,12 @@ int ApplyBoundsPatches(FILE* log, bool patchCmp)
             *reinterpret_cast<DWORD*>(va + 1) == 0x00040000)
         {
             if (op == 0x3D && !patchCmp) { ++cmpSkip; va += 5; continue; }
+            if (op == 0x3D)
+            {
+                bool skip = false;
+                for (DWORD s : kCmpSkip) if (s == va) { skip = true; break; }
+                if (skip) { ++cmpSkip; va += 5; continue; }
+            }
             DWORD oldProt = 0;
             void* p = reinterpret_cast<void*>(va + 1);
             if (VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt))
