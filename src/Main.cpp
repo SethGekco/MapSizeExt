@@ -65,12 +65,14 @@ static void ApplyInit()
                 isoW, isoH, isoBytes);
         ApplyStridePatches(f);
         ApplyBoundsPatches(f);
+        ApplyCoordPatches(f);
         fclose(f);
     }
     else
     {
         ApplyStridePatches(nullptr);
         ApplyBoundsPatches(nullptr);
+        ApplyCoordPatches(nullptr);
     }
 }
 

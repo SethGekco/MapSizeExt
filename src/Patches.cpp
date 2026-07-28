@@ -186,3 +186,62 @@ int ApplyBoundsPatches(FILE* log)
                      newTotal, cmpN, pushN, cmpN + pushN);
     return cmpN + pushN;
 }
+
+// ============================================================
+//  Inverse cell<->coord conversion (index -> X,Y) in MapClass, used
+//  by the camera, targeting and pathfinding:
+//    X = index & 0x1FF   (and reg,0x1FF)   @ 0x565C88, 0x566FA4
+//    Y = index >> 9      (sar reg,0x9)     @ 0x565C96, 0x566FB2
+//  For a >512 grid these must be mask=(stride-1) and shift=log2(stride);
+//  otherwise coords >=512 fold back to the top-left (the observed
+//  bottom-right -> top-left wrap). NO-OP at stride 512.
+// ============================================================
+int ApplyCoordPatches(FILE* log)
+{
+    const int shift = Log2Exact(g_MapStride);
+    if (shift < 0 || shift == 9)
+    {
+        if (log) fprintf(log, "[coord] inverse conv stays &0x1FF / >>9 (stride %d)  [no-op]\n",
+                         g_MapStride);
+        return 0;
+    }
+    const DWORD mask = (DWORD)g_MapStride - 1;          // 0x3FF for 1024
+    const DWORD maskSites[]  = { 0x565C88, 0x566FA4 };  // and reg,0x1FF (imm32 @ +2)
+    const DWORD shiftSites[] = { 0x565C96, 0x566FB2 };  // sar reg,0x9  (imm8  @ +2)
+    int n = 0;
+
+    for (int i = 0; i < 2; ++i)
+    {
+        const DWORD va = maskSites[i];
+        if (*reinterpret_cast<DWORD*>(va + 2) != 0x1FF)
+        {
+            if (log) fprintf(log, "[coord] SKIP mask 0x%06X: not 0x1FF\n", va);
+            continue;
+        }
+        DWORD oldProt = 0; void* p = reinterpret_cast<void*>(va + 2);
+        if (VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt))
+        {
+            *reinterpret_cast<DWORD*>(va + 2) = mask;
+            VirtualProtect(p, 4, oldProt, &oldProt); ++n;
+        }
+    }
+    for (int i = 0; i < 2; ++i)
+    {
+        const DWORD va = shiftSites[i];
+        if (*reinterpret_cast<BYTE*>(va) != 0xC1 ||
+            *reinterpret_cast<BYTE*>(va + 2) != 0x09)
+        {
+            if (log) fprintf(log, "[coord] SKIP shift 0x%06X: unexpected bytes\n", va);
+            continue;
+        }
+        DWORD oldProt = 0; void* p = reinterpret_cast<void*>(va + 2);
+        if (VirtualProtect(p, 1, PAGE_EXECUTE_READWRITE, &oldProt))
+        {
+            *reinterpret_cast<BYTE*>(va + 2) = (BYTE)shift;
+            VirtualProtect(p, 1, oldProt, &oldProt); ++n;
+        }
+    }
+    if (log) fprintf(log, "[coord] inverse conv -> mask 0x%X, shift %d : patched %d/4\n",
+                     mask, shift, n);
+    return n;
+}
