@@ -439,3 +439,38 @@ int ApplyModulePatches(FILE* log)
     }
     return grand;
 }
+
+// ============================================================
+//  Render-guard patch (0x657CF0).
+//  DisplayClass coordinate-transform picks between two virtual
+//  methods based on the global 0xB73550 (a DDraw/window resource
+//  object, non-null on large maps):
+//     0xB73550 == 0 -> call vtable+0x78  (safe)
+//     0xB73550 != 0 -> call vtable+0x7C  (Ares override that
+//                       dereferences the .bss singleton 0x880A04,
+//                       which NOTHING ever initializes -> null ->
+//                       crash at Ares+0x4DEEA)
+//  Because 0x880A04 is never valid, the +0x7C branch is unusable;
+//  force the safe +0x78 path by NOP-ing the guard `jne` (75 4B).
+//  NO byte change unless the bytes match exactly.
+// ============================================================
+int ApplyGuardPatches(FILE* log)
+{
+    const DWORD va = 0x657CF0;               // jne 0x657D3D
+    BYTE* p = reinterpret_cast<BYTE*>(va);
+    if (p[0] != 0x75 || p[1] != 0x4B)
+    {
+        if (log) fprintf(log, "[guard] SKIP 0x%06X: expected 75 4B, got %02X %02X\n",
+                         va, p[0], p[1]);
+        return 0;
+    }
+    DWORD oldProt = 0;
+    if (VirtualProtect(p, 2, PAGE_EXECUTE_READWRITE, &oldProt))
+    {
+        p[0] = 0x90; p[1] = 0x90;            // nop; nop  -> always take safe path
+        VirtualProtect(p, 2, oldProt, &oldProt);
+        if (log) fprintf(log, "[guard] 0x%06X jne->nop: forced safe +0x78 render path\n", va);
+        return 1;
+    }
+    return 0;
+}

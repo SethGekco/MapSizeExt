@@ -69,6 +69,7 @@ static void ApplyInit()
         if (cfg.PatchBounds)  ApplyBoundsPatches(f, cfg.PatchBoundsCmp != 0); else fprintf(f, "[bounds]  DISABLED via INI\n");
         if (cfg.PatchModules) ApplyModulePatches(f);  else fprintf(f, "[dll]     DISABLED via INI\n");
         if (cfg.PatchCoord)   ApplyCoordPatches(f);   else fprintf(f, "[coord]   DISABLED via INI\n");
+        if (cfg.PatchGuard)   ApplyGuardPatches(f);   else fprintf(f, "[guard]   DISABLED via INI\n");
         fclose(f);
     }
     else
@@ -77,6 +78,7 @@ static void ApplyInit()
         if (cfg.PatchBounds)  ApplyBoundsPatches(nullptr, cfg.PatchBoundsCmp != 0);
         if (cfg.PatchModules) ApplyModulePatches(nullptr);
         if (cfg.PatchCoord)   ApplyCoordPatches(nullptr);
+        if (cfg.PatchGuard)   ApplyGuardPatches(nullptr);
     }
 }
 
