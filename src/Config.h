@@ -24,6 +24,14 @@ struct MapSizeConfig
     int MaxHeight;
     int MaxDimension;   // per-axis engine gate (replaces cmp ax,0x200)
 
+    // Bisection toggles (all default 1 = on). Let a tester disable an
+    // individual patch group from the INI to isolate a crash without a
+    // rebuild. [Debug] PatchStride/PatchBounds/PatchModules/PatchCoord=0
+    int PatchStride;
+    int PatchBounds;
+    int PatchModules;   // Ares.dll + Phobos.dll cross-DLL cell patches
+    int PatchCoord;     // gamemd inverse index->(X,Y) conversion
+
     int Total() const { return Stride * Stride; }
 };
 
@@ -46,6 +54,11 @@ inline MapSizeConfig ReadConfig()
     cfg.MaxWidth     = GetPrivateProfileIntA("MapSize", "MaxWidth",     512, iniPath);
     cfg.MaxHeight    = GetPrivateProfileIntA("MapSize", "MaxHeight",    512, iniPath);
     cfg.MaxDimension = GetPrivateProfileIntA("MapSize", "MaxDimension", 512, iniPath);
+
+    cfg.PatchStride  = GetPrivateProfileIntA("Debug", "PatchStride",  1, iniPath);
+    cfg.PatchBounds  = GetPrivateProfileIntA("Debug", "PatchBounds",  1, iniPath);
+    cfg.PatchModules = GetPrivateProfileIntA("Debug", "PatchModules", 1, iniPath);
+    cfg.PatchCoord   = GetPrivateProfileIntA("Debug", "PatchCoord",   1, iniPath);
 
     // Clamp: never go below the vanilla values.
     if (cfg.Stride       < 512) cfg.Stride       = 512;

@@ -61,20 +61,22 @@ static void ApplyInit()
         fprintf(f, "Stride       = %d\n", g_MapStride);
         fprintf(f, "Total        = %d\n", g_MapTotal);
         fprintf(f, "MaxDimension = %d\n", g_MapMaxDimension);
+        fprintf(f, "Toggles: PatchStride=%d PatchBounds=%d PatchModules=%d PatchCoord=%d\n",
+                cfg.PatchStride, cfg.PatchBounds, cfg.PatchModules, cfg.PatchCoord);
         fprintf(f, "IsoMapPack5 buffer patched to %ux%u (%u bytes)\n",
                 isoW, isoH, isoBytes);
-        ApplyStridePatches(f);
-        ApplyBoundsPatches(f);
-        ApplyModulePatches(f);   // Ares.dll + Phobos.dll cell code -> match stride
-        ApplyCoordPatches(f);    // now safe: Ares/Phobos are consistent
+        if (cfg.PatchStride)  ApplyStridePatches(f); else fprintf(f, "[stride]  DISABLED via INI\n");
+        if (cfg.PatchBounds)  ApplyBoundsPatches(f);  else fprintf(f, "[bounds]  DISABLED via INI\n");
+        if (cfg.PatchModules) ApplyModulePatches(f);  else fprintf(f, "[dll]     DISABLED via INI\n");
+        if (cfg.PatchCoord)   ApplyCoordPatches(f);   else fprintf(f, "[coord]   DISABLED via INI\n");
         fclose(f);
     }
     else
     {
-        ApplyStridePatches(nullptr);
-        ApplyBoundsPatches(nullptr);
-        ApplyModulePatches(nullptr);
-        ApplyCoordPatches(nullptr);
+        if (cfg.PatchStride)  ApplyStridePatches(nullptr);
+        if (cfg.PatchBounds)  ApplyBoundsPatches(nullptr);
+        if (cfg.PatchModules) ApplyModulePatches(nullptr);
+        if (cfg.PatchCoord)   ApplyCoordPatches(nullptr);
     }
 }
 
