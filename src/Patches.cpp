@@ -159,7 +159,8 @@ int ApplyBoundsPatches(FILE* log, bool patchCmp)
 
     const DWORD tStart = 0x00401000;   // .text start
     const DWORD tEnd   = 0x007E038D;   // .text end (VA)
-    int cmpN = 0, pushN = 0, cmpSkip = 0;
+    const DWORD newDim = (DWORD)g_MapStride;   // 512->1024
+    int cmpN = 0, pushN = 0, cmpSkip = 0, cmpRegN = 0, rootN = 0;
 
     // Of the 405 `cmp eax,0x40000` sites, 401 are followed by a cell-array
     // `[reg+eax*4]` access (genuine cell-index bound checks -> must rise).
@@ -198,15 +199,64 @@ int ApplyBoundsPatches(FILE* log, bool patchCmp)
             }
             va += 5;
         }
+        // cmp reg,0x40000 (81 /7, modrm 0xF8..0xFF) -- the cell loop bounds my
+        // `cmp eax` (3D) scan missed. All 37 are in cell code (verified). Only
+        // when patchCmp (same class as the cmp-eax cell checks).
+        else if (patchCmp && op == 0x81)
+        {
+            const BYTE modrm = *reinterpret_cast<BYTE*>(va + 1);
+            if (modrm >= 0xF8 && modrm <= 0xFF &&
+                *reinterpret_cast<DWORD*>(va + 2) == 0x00040000)
+            {
+                DWORD oldProt = 0;
+                void* p = reinterpret_cast<void*>(va + 2);
+                if (VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt))
+                {
+                    *reinterpret_cast<DWORD*>(va + 2) = newTotal;
+                    VirtualProtect(p, 4, oldProt, &oldProt);
+                    ++cmpRegN;
+                }
+                va += 6;
+            }
+            else va += 1;
+        }
         else
         {
             va += 1;
         }
     }
 
-    if (log) fprintf(log, "[bounds] 0x40000 -> 0x%X : cmp eax=%d (skipped %d), push=%d\n",
-                     newTotal, cmpN, cmpSkip, pushN);
-    return cmpN + pushN;
+    // Root map dimensioning in MapClass::Init @0x565800: the cell array is
+    // allocated from these plain-immediate constants (not shl/cmp forms).
+    //   mov eax,0x200  (B8) -> feeds MAP_CELL_W/H [+0x14c]/[+0x150]
+    //   mov [ebp+0x154],0x40000 (C7) -> TotalCells (sizes the allocation)
+    // Without these the array is only 512x512 and cells >=262144 read heap
+    // garbage (0xFFFFFFFF) -> the constructor-on-bad-this crash at 0x410174.
+    struct RootPatch { DWORD va, off, expect, nv; };
+    const RootPatch roots[] = {
+        { 0x565812, 1, 0x00000200, newDim   },   // mov eax,0x200
+        { 0x565828, 6, 0x00040000, newTotal },   // mov [ebp+0x154],0x40000
+    };
+    for (const RootPatch& r : roots)
+    {
+        if (*reinterpret_cast<DWORD*>(r.va + r.off) != r.expect)
+        {
+            if (log) fprintf(log, "[bounds] SKIP root 0x%06X: unexpected imm\n", r.va);
+            continue;
+        }
+        DWORD oldProt = 0;
+        void* p = reinterpret_cast<void*>(r.va + r.off);
+        if (VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt))
+        {
+            *reinterpret_cast<DWORD*>(r.va + r.off) = r.nv;
+            VirtualProtect(p, 4, oldProt, &oldProt);
+            ++rootN;
+        }
+    }
+
+    if (log) fprintf(log, "[bounds] 0x40000->0x%X : cmp eax=%d (skip %d), cmp reg=%d, push=%d, root dims=%d/2\n",
+                     newTotal, cmpN, cmpSkip, cmpRegN, pushN, rootN);
+    return cmpN + pushN + cmpRegN + rootN;
 }
 
 // ============================================================
