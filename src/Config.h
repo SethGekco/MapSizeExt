@@ -28,9 +28,10 @@ struct MapSizeConfig
     // individual patch group from the INI to isolate a crash without a
     // rebuild. [Debug] PatchStride/PatchBounds/PatchModules/PatchCoord=0
     int PatchStride;
-    int PatchBounds;
-    int PatchModules;   // Ares.dll + Phobos.dll cross-DLL cell patches
-    int PatchCoord;     // gamemd inverse index->(X,Y) conversion
+    int PatchBounds;      // patch the cell-array reserve (push 0x40000)
+    int PatchBoundsCmp;   // ALSO patch the 405 suspect `cmp eax,0x40000` sites
+    int PatchModules;     // Ares.dll + Phobos.dll cross-DLL cell patches
+    int PatchCoord;       // gamemd inverse index->(X,Y) conversion
 
     int Total() const { return Stride * Stride; }
 };
@@ -55,10 +56,11 @@ inline MapSizeConfig ReadConfig()
     cfg.MaxHeight    = GetPrivateProfileIntA("MapSize", "MaxHeight",    512, iniPath);
     cfg.MaxDimension = GetPrivateProfileIntA("MapSize", "MaxDimension", 512, iniPath);
 
-    cfg.PatchStride  = GetPrivateProfileIntA("Debug", "PatchStride",  1, iniPath);
-    cfg.PatchBounds  = GetPrivateProfileIntA("Debug", "PatchBounds",  1, iniPath);
-    cfg.PatchModules = GetPrivateProfileIntA("Debug", "PatchModules", 1, iniPath);
-    cfg.PatchCoord   = GetPrivateProfileIntA("Debug", "PatchCoord",   1, iniPath);
+    cfg.PatchStride    = GetPrivateProfileIntA("Debug", "PatchStride",    1, iniPath);
+    cfg.PatchBounds    = GetPrivateProfileIntA("Debug", "PatchBounds",    1, iniPath);
+    cfg.PatchBoundsCmp = GetPrivateProfileIntA("Debug", "PatchBoundsCmp", 1, iniPath);
+    cfg.PatchModules   = GetPrivateProfileIntA("Debug", "PatchModules",   1, iniPath);
+    cfg.PatchCoord     = GetPrivateProfileIntA("Debug", "PatchCoord",     1, iniPath);
 
     // Clamp: never go below the vanilla values.
     if (cfg.Stride       < 512) cfg.Stride       = 512;

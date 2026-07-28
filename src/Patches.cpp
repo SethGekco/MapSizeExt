@@ -148,7 +148,7 @@ int ApplyStridePatches(FILE* log)
 //    3D 00 00 04 00   cmp eax,0x40000
 //    68 00 00 04 00   push 0x40000
 // ============================================================
-int ApplyBoundsPatches(FILE* log)
+int ApplyBoundsPatches(FILE* log, bool patchCmp)
 {
     const DWORD newTotal = (DWORD)g_MapTotal;
     if (newTotal == 0x40000)
@@ -159,14 +159,22 @@ int ApplyBoundsPatches(FILE* log)
 
     const DWORD tStart = 0x00401000;   // .text start
     const DWORD tEnd   = 0x007E038D;   // .text end (VA)
-    int cmpN = 0, pushN = 0;
+    int cmpN = 0, pushN = 0, cmpSkip = 0;
 
+    // WARNING: 0x40000 is BOTH 512*512 (cell-array size) AND 256 KB, a very
+    // common buffer/allocation constant. Blindly rewriting every `cmp
+    // eax,0x40000` corrupts unrelated 256 KB buffers. The `push 0x40000`
+    // (VectorClass reserve for the cell array) MUST rise or the array
+    // overflows at stride>512; the `cmp` checks are suspect and gated by
+    // patchCmp so we can bisect. The real cell-bounds checks are already
+    // handled by the IsCellValid/operator[] hooks in Hooks.cpp.
     for (DWORD va = tStart; va < tEnd - 5; )
     {
         const BYTE op = *reinterpret_cast<BYTE*>(va);
         if ((op == 0x3D || op == 0x68) &&
             *reinterpret_cast<DWORD*>(va + 1) == 0x00040000)
         {
+            if (op == 0x3D && !patchCmp) { ++cmpSkip; va += 5; continue; }
             DWORD oldProt = 0;
             void* p = reinterpret_cast<void*>(va + 1);
             if (VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt))
@@ -183,8 +191,8 @@ int ApplyBoundsPatches(FILE* log)
         }
     }
 
-    if (log) fprintf(log, "[bounds] 0x40000 -> 0x%X : cmp eax=%d, push=%d (total %d)\n",
-                     newTotal, cmpN, pushN, cmpN + pushN);
+    if (log) fprintf(log, "[bounds] 0x40000 -> 0x%X : cmp eax=%d (skipped %d), push=%d\n",
+                     newTotal, cmpN, cmpSkip, pushN);
     return cmpN + pushN;
 }
 
