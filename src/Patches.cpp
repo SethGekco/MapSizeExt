@@ -1,5 +1,6 @@
 #include "Patches.h"
 #include "MapSizeExt.h"
+#include "AresPhobosSites.h"
 #include <windows.h>
 
 // ============================================================
@@ -244,4 +245,87 @@ int ApplyCoordPatches(FILE* log)
     if (log) fprintf(log, "[coord] inverse conv -> mask 0x%X, shift %d : patched %d/4\n",
                      mask, shift, n);
     return n;
+}
+
+// ============================================================
+//  Cross-DLL cell-index patches (Ares.dll, Phobos.dll).
+//  These modules have their OWN x512 cell math; if gamemd's grid is
+//  1024 but theirs stays 512 they desync (e.g. Ares calls gamemd's
+//  patched inverse conv with a x512 index -> crash). We patch their
+//  cell sites (relative to GetModuleHandle base) to match. NO-OP at
+//  stride 512. RVAs in AresPhobosSites.h (ImageBase 0x10000000).
+//  Runs in DllMain AFTER Ares/Phobos are loaded (they inject before
+//  MapSizeExt) but BEFORE Syringe installs trampolines -> pristine.
+// ============================================================
+static int PatchShiftC1(DWORD va, BYTE shift)   // C1 /r 09  ->  C1 /r shift
+{
+    if (*reinterpret_cast<BYTE*>(va) != 0xC1 ||
+        *reinterpret_cast<BYTE*>(va + 2) != 0x09) return 0;
+    DWORD old = 0; void* p = reinterpret_cast<void*>(va + 2);
+    if (!VirtualProtect(p, 1, PAGE_EXECUTE_READWRITE, &old)) return 0;
+    *reinterpret_cast<BYTE*>(va + 2) = shift;
+    VirtualProtect(p, 1, old, &old); return 1;
+}
+static int PatchImm32(DWORD va, int off, DWORD expect, DWORD nv)
+{
+    if (*reinterpret_cast<DWORD*>(va + off) != expect) return 0;
+    DWORD old = 0; void* p = reinterpret_cast<void*>(va + off);
+    if (!VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &old)) return 0;
+    *reinterpret_cast<DWORD*>(va + off) = nv;
+    VirtualProtect(p, 4, old, &old); return 1;
+}
+
+int ApplyModulePatches(FILE* log)
+{
+    const int shift = Log2Exact(g_MapStride);
+    if (shift < 0 || shift == 9)
+    {
+        if (log) fprintf(log, "[dll] Ares/Phobos cell code stays x512 (stride %d)  [no-op]\n",
+                         g_MapStride);
+        return 0;
+    }
+    const DWORD total = (DWORD)g_MapTotal;
+    const DWORD mask  = (DWORD)g_MapStride - 1;
+
+    struct Mod {
+        const char* name;
+        const DWORD* shl;  int nshl;
+        const DWORD* cmp;  int ncmp;
+        const DWORD* andm; int nand;
+        const DWORD* sar;  int nsar;
+    };
+    const Mod mods[] = {
+        { "Ares.dll",   kAresShl,   kAresShl_n,   kAresCmp40,   kAresCmp40_n,
+                        0, 0, 0, 0 },
+        { "Phobos.dll", kPhobosShl, kPhobosShl_n, kPhobosCmp40, kPhobosCmp40_n,
+                        kPhobosAnd1ff, kPhobosAnd1ff_n, kPhobosSar9, kPhobosSar9_n },
+    };
+
+    int grand = 0;
+    for (int m = 0; m < 2; ++m)
+    {
+        const Mod& M = mods[m];
+        HMODULE h = GetModuleHandleA(M.name);
+        if (!h)
+        {
+            if (log) fprintf(log, "[dll] %s not loaded -> skip\n", M.name);
+            continue;
+        }
+        const DWORD base = reinterpret_cast<DWORD>(h);
+        int ns = 0, nc = 0, na = 0, nr = 0;
+        for (int i = 0; i < M.nshl; ++i) ns += PatchShiftC1(base + M.shl[i], (BYTE)shift);
+        for (int i = 0; i < M.ncmp; ++i) nc += PatchImm32(base + M.cmp[i], 1, 0x40000, total);
+        for (int i = 0; i < M.nand; ++i)
+        {
+            const DWORD va = base + M.andm[i];
+            const BYTE op = *reinterpret_cast<BYTE*>(va);
+            if (op == 0x25)      na += PatchImm32(va, 1, 0x1FF, mask);  // and eax,0x1FF
+            else if (op == 0x81) na += PatchImm32(va, 2, 0x1FF, mask);  // and reg,0x1FF
+        }
+        for (int i = 0; i < M.nsar; ++i) nr += PatchShiftC1(base + M.sar[i], (BYTE)shift);
+        if (log) fprintf(log, "[dll] %s @0x%X: shl %d/%d, cmp %d/%d, and %d/%d, sar %d/%d\n",
+                         M.name, base, ns, M.nshl, nc, M.ncmp, na, M.nand, nr, M.nsar);
+        grand += ns + nc + na + nr;
+    }
+    return grand;
 }

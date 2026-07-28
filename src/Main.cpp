@@ -65,15 +65,16 @@ static void ApplyInit()
                 isoW, isoH, isoBytes);
         ApplyStridePatches(f);
         ApplyBoundsPatches(f);
-        // ApplyCoordPatches(f);  // REVERTED: patching gamemd's inverse index->
-        //   (X,Y) conversion crashes Ares.dll, which has its own x512 cell code
-        //   and calls this gamemd conversion. Needs a cross-DLL approach.
+        ApplyModulePatches(f);   // Ares.dll + Phobos.dll cell code -> match stride
+        ApplyCoordPatches(f);    // now safe: Ares/Phobos are consistent
         fclose(f);
     }
     else
     {
         ApplyStridePatches(nullptr);
         ApplyBoundsPatches(nullptr);
+        ApplyModulePatches(nullptr);
+        ApplyCoordPatches(nullptr);
     }
 }
 

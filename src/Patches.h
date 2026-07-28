@@ -32,3 +32,7 @@ int ApplyBoundsPatches(FILE* log);
 // Fixes the inverse index->(X,Y) conversions (and 0x1FF / sar 9) so
 // coordinates >=512 don't wrap to the top-left. NO-OP at stride 512.
 int ApplyCoordPatches(FILE* log);
+
+// Patches Ares.dll and Phobos.dll's own cell-index code (relative to
+// their GetModuleHandle base) to match gamemd's stride. NO-OP at 512.
+int ApplyModulePatches(FILE* log);
