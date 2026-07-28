@@ -209,6 +209,15 @@ int ApplyCoordPatches(FILE* log)
     const DWORD mask = (DWORD)g_MapStride - 1;          // 0x3FF for 1024
     const DWORD maskSites[]  = { 0x565C88, 0x566FA4 };  // and reg,0x1FF (imm32 @ +2)
     const DWORD shiftSites[] = { 0x565C96, 0x566FB2 };  // sar reg,0x9  (imm8  @ +2)
+    // The div (Y = idx/512) above is only HALF of a signed div/mod-512 idiom.
+    // Its paired mod (X = idx%512) uses `and reg,0x800001ff` + `or reg,
+    // 0xfffffe00`. If we raise the div to /1024 but leave the mod at %512 the
+    // coordinate is mangled -> a lookup returns null -> Ares crashes calling a
+    // method on a null singleton (0x880a04). So patch the mod halves too.
+    const DWORD modAndSites[] = { 0x565C75, 0x566F91 }; // and reg,0x800001FF (imm32 @ +2)
+    const DWORD modOrSites[]  = { 0x565C7E, 0x566F9A }; // or  reg,0xFFFFFE00 (imm32 @ +2)
+    const DWORD modAndNew = 0x80000000u | mask;         // keep sign bit + low log2 bits
+    const DWORD modOrNew  = ~mask;                      // 0xFFFFFC00 for 1024
     int n = 0;
 
     for (int i = 0; i < 2; ++i)
@@ -242,8 +251,38 @@ int ApplyCoordPatches(FILE* log)
             VirtualProtect(p, 1, oldProt, &oldProt); ++n;
         }
     }
-    if (log) fprintf(log, "[coord] inverse conv -> mask 0x%X, shift %d : patched %d/4\n",
-                     mask, shift, n);
+    for (int i = 0; i < 2; ++i)   // signed mod-512 mask: and reg,0x800001FF
+    {
+        const DWORD va = modAndSites[i];
+        if (*reinterpret_cast<DWORD*>(va + 2) != 0x800001FF)
+        {
+            if (log) fprintf(log, "[coord] SKIP mod-and 0x%06X: not 0x800001FF\n", va);
+            continue;
+        }
+        DWORD oldProt = 0; void* p = reinterpret_cast<void*>(va + 2);
+        if (VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt))
+        {
+            *reinterpret_cast<DWORD*>(va + 2) = modAndNew;
+            VirtualProtect(p, 4, oldProt, &oldProt); ++n;
+        }
+    }
+    for (int i = 0; i < 2; ++i)   // signed mod-512 fixup: or reg,0xFFFFFE00
+    {
+        const DWORD va = modOrSites[i];
+        if (*reinterpret_cast<DWORD*>(va + 2) != 0xFFFFFE00)
+        {
+            if (log) fprintf(log, "[coord] SKIP mod-or 0x%06X: not 0xFFFFFE00\n", va);
+            continue;
+        }
+        DWORD oldProt = 0; void* p = reinterpret_cast<void*>(va + 2);
+        if (VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt))
+        {
+            *reinterpret_cast<DWORD*>(va + 2) = modOrNew;
+            VirtualProtect(p, 4, oldProt, &oldProt); ++n;
+        }
+    }
+    if (log) fprintf(log, "[coord] inverse conv -> mask 0x%X, shift %d, modAnd 0x%X, modOr 0x%X : patched %d/8\n",
+                     mask, shift, modAndNew, modOrNew, n);
     return n;
 }
 
