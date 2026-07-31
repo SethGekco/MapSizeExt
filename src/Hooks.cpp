@@ -175,3 +175,34 @@ DEFINE_HOOK(554BC5, MapDimGate_Site3, 6)
     if ((short)R->CX() >= (short)g_MapMaxDimension) return 0x554CE4;
     return 0x554BDF;
 }
+
+// ============================================================
+//  Radar minimap null-guard (Stride > 512).
+//  At stride > 512 the radar surface CREATION path is gated out
+//  (its computed minimap dims go degenerate), so the two radar
+//  surfaces RadarClass::Instance+0x121C / +0x1220 stay NULL.
+//  Antares's minimap bugfix (Bugfixes.Minimap.cpp: LockRadarSurfaces)
+//  then dereferences the null surface -> crash at MinimapChanged
+//  (0x657D3D) during scenario load. There is nothing to update when
+//  the minimap surfaces don't exist, so skip RadarClass::MinimapChanged
+//  (0x657CE0) entirely in that case -- which also bypasses the Antares
+//  lock hooks inside it. NO-OP on normal maps (surfaces are non-null)
+//  and at stride 512. Guards both surfaces. this = ECX = RadarClass::
+//  Instance (0x87F7E8); the function takes no stack args (plain `ret`).
+// ============================================================
+DEFINE_HOOK(657CE0, RadarClass_MinimapChanged_NullGuard, 5)
+{
+    if (g_MapStride > 512)
+    {
+        const DWORD radar = 0x87F7E8;   // RadarClass::Instance
+        if (*reinterpret_cast<DWORD*>(radar + 0x121C) == 0 ||
+            *reinterpret_cast<DWORD*>(radar + 0x1220) == 0)
+        {
+            const DWORD esp = R->ESP();
+            const DWORD ret = *reinterpret_cast<DWORD*>(esp);
+            R->ESP(esp + 4);            // pop return addr (simulate `ret`)
+            return ret;                 // jump to caller -> skip the function
+        }
+    }
+    return 0;                           // surfaces exist -> run normally
+}
