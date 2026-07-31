@@ -190,6 +190,12 @@ DEFINE_HOOK(554BC5, MapDimGate_Site3, 6)
 //  and at stride 512. Guards both surfaces. this = ECX = RadarClass::
 //  Instance (0x87F7E8); the function takes no stack args (plain `ret`).
 // ============================================================
+//  CRITICAL: do NOT skip by writing R->ESP() -- Syringe restores registers
+//  with `popad`, which IGNORES the esp slot, so an esp write never sticks and
+//  the stack ends up 4 bytes misaligned (that produced the bogus "corrupted
+//  temp" at 0x5257AC and the wild EIP=0x0D control-flow smash). Instead jump
+//  to a bare `ret` (0x657D3C) and let the CPU's own `ret` pop the caller's
+//  return address -- a correct, esp-safe function skip.
 DEFINE_HOOK(657CE0, RadarClass_MinimapChanged_NullGuard, 5)
 {
     if (g_MapStride > 512)
@@ -198,42 +204,8 @@ DEFINE_HOOK(657CE0, RadarClass_MinimapChanged_NullGuard, 5)
         if (*reinterpret_cast<DWORD*>(radar + 0x121C) == 0 ||
             *reinterpret_cast<DWORD*>(radar + 0x1220) == 0)
         {
-            const DWORD esp = R->ESP();
-            const DWORD ret = *reinterpret_cast<DWORD*>(esp);
-            R->ESP(esp + 4);            // pop return addr (simulate `ret`)
-            return ret;                 // jump to caller -> skip the function
+            return 0x657D3C;            // a bare `ret` -> clean skip of the function
         }
     }
     return 0;                           // surfaces exist -> run normally
-}
-
-// ============================================================
-//  Corrupted-temp destructor guard (Stride > 512).
-//  In the scenario-view setup (gamemd 0x687Cxx) a stack-local temp
-//  (class vtable 0x7EA5F4, two embedded list nodes at +0x10/+0x1c)
-//  is destructed by 0x5256F0. At stride > 512 the big-map processing
-//  overflows and leaves that temp's list fields pointing into
-//  read-only .rdata (the list-node vtable 0x7E1B0C / sentinels
-//  0x7E1AFC/0x7E1B04) instead of null. The destructor's unlink then
-//  writes `next->prev` into read-only memory -> AV at 0x5257AC.
-//  The dtor already skips a node whose next/prev is 0, so neutralise
-//  ONLY the .rdata-corrupted fields (nodes at +0x10 and +0x1c: their
-//  next @+0x14/+0x20 and prev @+0x18/+0x24). NO-OP for valid temps
-//  (heap/null fields) and at stride 512.
-//  Stolen: push ebx; push esi; xor ebx,ebx; mov esi,ecx = 6 bytes.
-// ============================================================
-DEFINE_HOOK(5256F0, ClassX_Dtor_SanitizeCorruptList, 6)
-{
-    if (g_MapStride > 512)
-    {
-        const DWORD self = R->ECX();          // this
-        const DWORD RDATA_LO = 0x007E1000, RDATA_HI = 0x00811074;
-        const DWORD offs[] = { 0x14, 0x18, 0x20, 0x24 };
-        for (DWORD off : offs)
-        {
-            DWORD* p = reinterpret_cast<DWORD*>(self + off);
-            if (*p >= RDATA_LO && *p < RDATA_HI) *p = 0;   // -> dtor null-check skips it
-        }
-    }
-    return 0;   // run the (now-safe) destructor normally
 }
