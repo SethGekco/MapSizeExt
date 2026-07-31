@@ -30,6 +30,7 @@ struct MapSizeConfig
     int PatchStride;
     int PatchBounds;      // patch the cell-array reserve (push 0x40000)
     int PatchBoundsCmp;   // ALSO patch the 405 suspect `cmp eax,0x40000` sites
+    int PatchRootWH;      // patch MAP_CELL_W/H (0x14c/0x150) to stride; 0 keeps 512 (radar-safe)
     int PatchModules;     // Ares.dll + Phobos.dll cross-DLL cell patches
     int PatchCoord;       // gamemd inverse index->(X,Y) conversion
     int PatchGuard;       // force safe render path @0x657CF0 (avoid null 0x880A04)
@@ -60,6 +61,7 @@ inline MapSizeConfig ReadConfig()
     cfg.PatchStride    = GetPrivateProfileIntA("Debug", "PatchStride",    1, iniPath);
     cfg.PatchBounds    = GetPrivateProfileIntA("Debug", "PatchBounds",    1, iniPath);
     cfg.PatchBoundsCmp = GetPrivateProfileIntA("Debug", "PatchBoundsCmp", 1, iniPath);
+    cfg.PatchRootWH    = GetPrivateProfileIntA("Debug", "PatchRootWH",    1, iniPath);
     cfg.PatchModules   = GetPrivateProfileIntA("Debug", "PatchModules",   1, iniPath);
     cfg.PatchCoord     = GetPrivateProfileIntA("Debug", "PatchCoord",     1, iniPath);
     cfg.PatchGuard     = GetPrivateProfileIntA("Debug", "PatchGuard",     1, iniPath);

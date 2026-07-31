@@ -148,7 +148,7 @@ int ApplyStridePatches(FILE* log)
 //    3D 00 00 04 00   cmp eax,0x40000
 //    68 00 00 04 00   push 0x40000
 // ============================================================
-int ApplyBoundsPatches(FILE* log, bool patchCmp)
+int ApplyBoundsPatches(FILE* log, bool patchCmp, bool patchRootWH)
 {
     const DWORD newTotal = (DWORD)g_MapTotal;
     if (newTotal == 0x40000)
@@ -232,13 +232,23 @@ int ApplyBoundsPatches(FILE* log, bool patchCmp)
     //   mov [ebp+0x154],0x40000 (C7) -> TotalCells (sizes the allocation)
     // Without these the array is only 512x512 and cells >=262144 read heap
     // garbage (0xFFFFFFFF) -> the constructor-on-bad-this crash at 0x410174.
-    struct RootPatch { DWORD va, off, expect, nv; };
+    // `wh`=true is the MAP_CELL_W/H metadata (0x14c/0x150). RadarClass reads
+    // these to size its minimap; forcing 1024 makes the radar dims degenerate
+    // (<=0) -> radar surface creation is skipped -> null surface -> Antares
+    // LockRadarSurfaces crashes. The array is sized by TotalCells (0x154), so
+    // W/H can stay 512 for the array while total rises. Gated by patchRootWH.
+    struct RootPatch { DWORD va, off, expect, nv; bool wh; };
     const RootPatch roots[] = {
-        { 0x565812, 1, 0x00000200, newDim   },   // mov eax,0x200
-        { 0x565828, 6, 0x00040000, newTotal },   // mov [ebp+0x154],0x40000
+        { 0x565812, 1, 0x00000200, newDim,   true  },   // mov eax,0x200 -> W/H
+        { 0x565828, 6, 0x00040000, newTotal, false },   // mov [ebp+0x154],0x40000 -> total
     };
     for (const RootPatch& r : roots)
     {
+        if (r.wh && !patchRootWH)
+        {
+            if (log) fprintf(log, "[bounds] root W/H 0x%06X kept at 512 (PatchRootWH=0)\n", r.va);
+            continue;
+        }
         if (*reinterpret_cast<DWORD*>(r.va + r.off) != r.expect)
         {
             if (log) fprintf(log, "[bounds] SKIP root 0x%06X: unexpected imm\n", r.va);

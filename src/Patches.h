@@ -27,7 +27,7 @@ int ApplyStridePatches(FILE* log);
 // the inlined `cmp eax,0x40000` bounds checks and the `push 0x40000`
 // VectorClass reserve -- to g_MapTotal (stride*stride). NO-OP at stride
 // 512. Returns the number of immediates patched.
-int ApplyBoundsPatches(FILE* log, bool patchCmp);
+int ApplyBoundsPatches(FILE* log, bool patchCmp, bool patchRootWH);
 
 // Fixes the inverse index->(X,Y) conversions (and 0x1FF / sar 9) so
 // coordinates >=512 don't wrap to the top-left. NO-OP at stride 512.

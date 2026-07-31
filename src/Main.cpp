@@ -61,12 +61,12 @@ static void ApplyInit()
         fprintf(f, "Stride       = %d\n", g_MapStride);
         fprintf(f, "Total        = %d\n", g_MapTotal);
         fprintf(f, "MaxDimension = %d\n", g_MapMaxDimension);
-        fprintf(f, "Toggles: PatchStride=%d PatchBounds=%d PatchBoundsCmp=%d PatchModules=%d PatchCoord=%d\n",
-                cfg.PatchStride, cfg.PatchBounds, cfg.PatchBoundsCmp, cfg.PatchModules, cfg.PatchCoord);
+        fprintf(f, "Toggles: PatchStride=%d PatchBounds=%d PatchBoundsCmp=%d PatchRootWH=%d PatchModules=%d PatchCoord=%d PatchGuard=%d\n",
+                cfg.PatchStride, cfg.PatchBounds, cfg.PatchBoundsCmp, cfg.PatchRootWH, cfg.PatchModules, cfg.PatchCoord, cfg.PatchGuard);
         fprintf(f, "IsoMapPack5 buffer patched to %ux%u (%u bytes)\n",
                 isoW, isoH, isoBytes);
         if (cfg.PatchStride)  ApplyStridePatches(f); else fprintf(f, "[stride]  DISABLED via INI\n");
-        if (cfg.PatchBounds)  ApplyBoundsPatches(f, cfg.PatchBoundsCmp != 0); else fprintf(f, "[bounds]  DISABLED via INI\n");
+        if (cfg.PatchBounds)  ApplyBoundsPatches(f, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0); else fprintf(f, "[bounds]  DISABLED via INI\n");
         if (cfg.PatchModules) ApplyModulePatches(f);  else fprintf(f, "[dll]     DISABLED via INI\n");
         if (cfg.PatchCoord)   ApplyCoordPatches(f);   else fprintf(f, "[coord]   DISABLED via INI\n");
         if (cfg.PatchGuard)   ApplyGuardPatches(f);   else fprintf(f, "[guard]   DISABLED via INI\n");
@@ -75,7 +75,7 @@ static void ApplyInit()
     else
     {
         if (cfg.PatchStride)  ApplyStridePatches(nullptr);
-        if (cfg.PatchBounds)  ApplyBoundsPatches(nullptr, cfg.PatchBoundsCmp != 0);
+        if (cfg.PatchBounds)  ApplyBoundsPatches(nullptr, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0);
         if (cfg.PatchModules) ApplyModulePatches(nullptr);
         if (cfg.PatchCoord)   ApplyCoordPatches(nullptr);
         if (cfg.PatchGuard)   ApplyGuardPatches(nullptr);
