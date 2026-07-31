@@ -139,3 +139,26 @@ Added 2026-07-30 (companion project `~/Claude/RA2MapGen`, Python; validated IsoM
 - yr-patches (IsoMapPack5 asm): https://github.com/CnCNet/yr-patches
 - WAE editor: https://github.com/CnCNet/WorldAlteringEditor
 - Cross-codebase reference: `~/Downloads/MapSize_CrossCodebase_Reference.md`
+
+---
+
+## 9. Antares pivot — first results (2026-07-30)
+
+**Swap done & works mechanically.** Antares.dll (master CI commit `9f25bdbb`, run 30422924319) installed; `Ares.dll` renamed to `.antares-bak` (Antares requires Ares absent); `wine-game.sh` `-i=Ares.dll`→`-i=Antares.dll`. **Also change `ExtraCommandLineParams=` in `Resources/ClientDefinitions.ini`** (the Windows/client path — easy to forget). DLL + **full PDB** saved in `~/Claude/Antares/` (PROVENANCE.txt has the commit).
+
+**★ THE PDB METHOD (this is the durable technique).** With `Antares.pdb` next to `Antares.dll`, a crash address resolves to an exact function + source line — no more guessing from disassembly:
+```
+crash EIP 0x77DAFF41 ; Antares loaded base 0x77D40000 (Phobos labels it "Ares.dll")
+RVA = 0x77DAFF41 - 0x77D40000 = 0x6FF41   (Antares ImageBase 0x10000000)
+/usr/lib/llvm-18/bin/llvm-symbolizer --obj=Antares.dll --relative-address 0x6FF41
+  -> MapClass_MinimapChanged_Lock2  @ src/Misc/Bugfixes.Minimap.cpp:40
+```
+Then `gh api repos/Phobos-developers/Antares/contents/src/Misc/<file>` reads the actual source. **Always symbolize with the PDB before disassembling.**
+
+**First crash (same as Ares, now NAMED):** `LockRadarSurfaces()` in `Bugfixes.Minimap.cpp` derefs `RadarClass::Instance.unknown_121C` (a **radar/minimap DirectDraw Surface**) which is **null**. Fires from the minimap-changed hooks at gamemd `0x657CF2`/`0x657D3D`. `ESI=0x87F7E8 = RadarClass::Instance`. `EAX=0x10064` is **constant across every crash** (old-Ares 300², new-Ares, Antares small-urban) → not a map coordinate; a fixed path. Explains why the `PatchGuard` NOP failed: **both** guard branches (`Lock1`@0x657CF2, `Lock2`@0x657D3D) call `LockRadarSurfaces`.
+
+**Leading hypothesis (user's):** downstream of our patches. Our root-dim patch sets `MAP_CELL_W/H=1024` for EVERY map unconditionally → likely breaks radar-surface creation/sizing → null surface → the Antares lock hook crashes. **Isolation test set up:** `Stride=512`+`MaxDimension=512` (full no-op) on a normal map — if it plays, our 1024 radar handling is the remaining work; if it still crashes, the Antares↔Phobos#48 mismatch is the blocker.
+
+**Compat flag:** `[Phobos] Detected a version of Ares that is not supported by Phobos. Disabling integration.` — Phobos Dev Build #48 is older than this Antares master build, so Phobos ran without Ares integration (may destabilize the mod stack: Kratos/TechnoAttachmentExt/etc.). Consider a Phobos build that supports this Antares, or an Antares build #48 whitelists.
+
+**Backups (revert path):** `Ares.dll.antares-bak`, `wine-game.sh.antares-bak` in the game dir.
