@@ -365,12 +365,30 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
         int cx = lx >> 8;
         int cy = ly >> 8;
         DWORD items = *reinterpret_cast<DWORD*>(0x87F7E8 + 0x13C);  // Cells.Items
-        int   idx   = cy * g_MapStride + cx;
-        DWORD cell  = 0;
-        if (items && idx >= 0 && idx < g_MapTotal)
-            cell = *reinterpret_cast<DWORD*>(items + idx * 4);
-        DeployDiagLog("CDU this=0x%X loc=(%d,%d,%d) cell=(%d,%d) idx=%d cellptr=0x%X\n",
-            self, lx, ly, lz, cx, cy, idx, cell);
+        // Look up the SAME cell at both strides. If the 512-strided slot holds a
+        // real cell but the 1024-strided slot is null, the cell-pointer array was
+        // populated at stride 512 (an unpatched population loop) while operator[]
+        // reads at 1024 -> the smoking gun.
+        int  idx1024 = cy * 1024 + cx;
+        int  idx512  = cy * 512  + cx;
+        DWORD c1024 = 0, c512 = 0;
+        if (items)
+        {
+            if (idx1024 >= 0 && idx1024 < (1024*1024)) c1024 = *reinterpret_cast<DWORD*>(items + idx1024 * 4);
+            if (idx512  >= 0 && idx512  < (1024*1024)) c512  = *reinterpret_cast<DWORD*>(items + idx512  * 4);
+        }
+        // Also scan the 4 rows around cy at 1024 stride: how many non-null in [cx-2..cx+2]?
+        int hits1024 = 0, hits512 = 0;
+        if (items)
+            for (int yy = cy - 1; yy <= cy + 1; ++yy)
+                for (int xx = cx - 2; xx <= cx + 2; ++xx)
+                {
+                    int i1 = yy * 1024 + xx, i5 = yy * 512 + xx;
+                    if (i1 >= 0 && i1 < 1024*1024 && *reinterpret_cast<DWORD*>(items + i1 * 4)) ++hits1024;
+                    if (i5 >= 0 && i5 < 1024*1024 && *reinterpret_cast<DWORD*>(items + i5 * 4)) ++hits512;
+                }
+        DeployDiagLog("CDU loc=(%d,%d,%d) cell=(%d,%d)  c1024[%d]=0x%X c512[%d]=0x%X  neigh(nonnull) 1024=%d 512=%d\n",
+            lx, ly, lz, cx, cy, idx1024, c1024, idx512, c512, hits1024, hits512);
     }
     R->ECX(0x87F7E8);   // replicate mov ecx,0x87f7e8
     return 0x700D74;
