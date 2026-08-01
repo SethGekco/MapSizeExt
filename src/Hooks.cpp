@@ -3,6 +3,7 @@
 #include <Syringe.h>
 #include <windows.h>
 #include <cstdio>
+#include <cstdarg>
 
 // ============================================================
 //  Hooks.cpp  -  Phase 1: cell-grid stride, bounds and the
@@ -311,4 +312,64 @@ DEFINE_HOOK(70D990, Object_PlotOnRadar_NullGuard, 6)
     if (g_MapStride > 512 && *reinterpret_cast<DWORD*>(0x00880A04) == 0)
         return 0x70DC42;                // bare `ret 4` -> clean skip
     return 0;
+}
+
+// ============================================================
+//  DEPLOY DIAGNOSTIC (stride > 512 only)
+//  MapClass::CanBuildingTypeBePlacedHere @0x4A8EB0 is the deploy/
+//  placement validity check. On a normal map at stride 1024 the MCV
+//  refuses to deploy ("area blocked"). The cell lookup inside (call
+//  0x5657a0 = operator[]) is patched, so we log:
+//    (a) each call's target cell (arg4 = CellStruct*, X=[edi], Y=[edi+2])
+//    (b) each "blocker found" mark (0x4A9027) with the occupier object
+//  to see whether the coord is sane and what the check treats as a
+//  blocker. Appends to MapSizeExt_deploy.log (abs path, capped).
+// ============================================================
+static void DeployDiagLog(const char* fmt, ...)
+{
+    static int lines = 0;
+    if (g_MapStride <= 512 || lines >= 200) return;
+    char path[MAX_PATH];
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    char* slash = strrchr(path, '\\');
+    if (slash) *(slash + 1) = '\0';
+    strcat_s(path, "MapSizeExt_deploy.log");
+    FILE* f = nullptr;
+    fopen_s(&f, path, "a");
+    if (!f) return;
+    va_list ap; va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fclose(f);
+    ++lines;
+}
+
+// Entry: log the target cell. Stolen: mov eax,ds:0xa83d4c (5 bytes).
+DEFINE_HOOK(4A8EB0, CanBTBPH_Entry_Diag, 5)
+{
+    if (g_MapStride > 512)
+    {
+        DWORD esp   = R->ESP();
+        void* pCell = *reinterpret_cast<void**>(esp + 0x10);  // arg4 = CellStruct*
+        void* pType = *reinterpret_cast<void**>(esp + 0x0C);  // arg3 = BuildingType*
+        int X = -1, Y = -1;
+        if (pCell) { X = *reinterpret_cast<short*>(pCell); Y = *reinterpret_cast<short*>(reinterpret_cast<char*>(pCell) + 2); }
+        DeployDiagLog("CanBTBPH cell=(%d,%d) type=0x%p\n", X, Y, pType);
+    }
+    R->EAX(*reinterpret_cast<DWORD*>(0x00A83D4C));  // replicate stolen mov
+    return 0x4A8EB5;
+}
+
+// Blocker-found marker: mov [esp+0x3c],1 (5 bytes: C6 44 24 3C 01).
+// esi = the occupier object; *(DWORD*)esi = its vtable (identifies type).
+DEFINE_HOOK(4A9027, CanBTBPH_Blocker_Diag, 5)
+{
+    if (g_MapStride > 512)
+    {
+        DWORD esi = R->ESI();
+        DWORD vt  = esi ? *reinterpret_cast<DWORD*>(esi) : 0;
+        DeployDiagLog("   BLOCKER occupier=0x%X vtbl=0x%X\n", esi, vt);
+    }
+    *reinterpret_cast<BYTE*>(R->ESP() + 0x3C) = 1;  // replicate stolen store
+    return 0x4A902C;
 }
