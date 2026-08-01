@@ -58,14 +58,17 @@ int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
 static void DumpMapStateOnce()
 {
     static bool done = false;
-    static unsigned long long calls = 0;
     if (done || g_MapStride <= 512) return;
-    if (++calls < 50000ULL) return;    // wait until we're clearly in a live game
-    done = true;
 
     const DWORD m = 0x87F7E8;          // MapClass::Instance object base
     auto I = [m](DWORD off) { return *reinterpret_cast<int*>(m + off); };
     auto U = [m](DWORD off) { return *reinterpret_cast<DWORD*>(m + off); };
+
+    // Readiness: cell array allocated. Dump on the FIRST post-load call -- the
+    // hot cell access is the inlined byte-patched shl sites (no hook), so the
+    // hooked accessors are cold and a call-count threshold never trips.
+    if (U(0x138) == 0 || I(0x14C) <= 0) return;   // Cells.Items==0 / MaxNumCells<=0
+    done = true;
 
     // Absolute path in the game exe dir (CWD at gameplay-time is NOT the exe dir,
     // which is why the earlier relative-path dumps never appeared).
@@ -169,6 +172,7 @@ DEFINE_HOOK(483B32, MapClass_InlineAccess_Stride, 6)
 DEFINE_HOOK(565757, MapClass_LeptonOp_Stride, 5)
 {
     R->EDX(R->EDX<int>() * g_MapStride + R->ESI<int>());
+    DumpMapStateOnce();  // diagnostic (once) - hot during pan/render
     return 0x56575C;  // js 0x56577a
 }
 
