@@ -2,6 +2,7 @@
 #include "Config.h"
 #include <Syringe.h>
 #include <windows.h>
+#include <cstdio>
 
 // ============================================================
 //  Hooks.cpp  -  Phase 1: cell-grid stride, bounds and the
@@ -41,12 +42,36 @@ int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
 //    5656F8: mov edx,[esp+8]  <- resume target on success
 //  Entry: eax = Y (movsx), ecx = X (movsx).
 // ============================================================
+// Diagnostic: once, in-game (after the map is loaded), dump MapClass::Instance's
+// dimension/rect fields so we can see the map's ACTUAL runtime layout vs our
+// x1024 metadata. Writes MapSizeExt_diag.log in the game dir. Stride>512 only.
+static void DumpMapStateOnce(DWORD mapThis)
+{
+    static bool done = false;
+    if (done || g_MapStride <= 512) return;
+    if (mapThis == 0 || *reinterpret_cast<int*>(mapThis + 0x14c) <= 0) return; // not ready
+    done = true;
+    FILE* f = nullptr;
+    fopen_s(&f, "MapSizeExt_diag.log", "w");
+    if (!f) return;
+    fprintf(f, "MapClass this=0x%X  g_MapStride=%d g_MapTotal=%d\n", mapThis, g_MapStride, g_MapTotal);
+    fprintf(f, "MAP_CELL_W[+0x14c]=%d  MAP_CELL_H[+0x150]=%d  Total[+0x154]=%d  Count[+0x140]=%d\n",
+        *reinterpret_cast<int*>(mapThis + 0x14c), *reinterpret_cast<int*>(mapThis + 0x150),
+        *reinterpret_cast<int*>(mapThis + 0x154), *reinterpret_cast<int*>(mapThis + 0x140));
+    for (DWORD off = 0xE0; off <= 0x160; off += 4)
+        fprintf(f, "  [+0x%03X] = %11d  (0x%08X)\n", off,
+                *reinterpret_cast<int*>(mapThis + off), *reinterpret_cast<DWORD*>(mapThis + off));
+    fclose(f);
+}
+
 DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 {
     int y = R->EAX<int>();
     int x = R->ECX<int>();
     int index = y * g_MapStride + x;
     R->EAX(index);
+
+    DumpMapStateOnce(0x87F7E8);   // MapClass::Instance singleton (diagnostic, once)
 
     if (index < 0)             return 0x565709;  // js  (negative)
     if (index >= g_MapTotal)   return 0x565709;  // cmp/jge (out of bounds)
