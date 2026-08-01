@@ -11,7 +11,7 @@
 //  These are grouped so a site can be commented out during
 //  in-game crash-hunting without disturbing the others.
 // ============================================================
-// Cell-grid stride sites (shl reg,0x9 -> *stride). 431 CellClass* (*4) sites + 41 shroud (*1) sites; radar/isometric/bitfield excluded. NO-OP at 512.
+// Cell-grid stride sites (shl reg,0x9 -> *stride). 435 CellClass* (*4) sites + 41 shroud (*1) sites = 476; radar/isometric/bitfield excluded. NO-OP at 512.
 static const DWORD kCellStrideSites[] =
 {
     0x429AB1, 0x429AC2, 0x429DFA, 0x483B32, 0x493CF1, 0x493E22, 0x493F66, 0x4940B1,
@@ -73,6 +73,14 @@ static const DWORD kCellStrideSites[] =
     0x586D89, 0x586DCF, 0x586ECD, 0x586FEB, 0x5871B0, 0x587249, 0x587279, 0x5873A6,
     0x58745A, 0x5874B8, 0x587535, 0x5875E2, 0x587679, 0x58786D, 0x5878F4, 0x58796E,
     0x5879F3, 0x587A91, 0x587B10, 0x587B82, 0x587BF7, 0x588169, 0x588256, 0x588467,
+    // Foundation-occupancy misses in MapClass::AddContentAt / RemoveContentAt.
+    // Each computes cell index Y*512+X, bounds-checks vs the RUNTIME total in
+    // [this+0x140] (Cells.Capacity = MaxNumCells = 1048576, already patched), then
+    // loads Cells.Items[index] via [reg+0x13c] with *4. Verified genuine cell
+    // strides (not a fixed buffer/bitfield); originally excluded as "buffer".
+    // These are the building placement/deploy path -- unpatched they mis-register
+    // a building's footprint on the wrong cells at stride 1024.
+    0x56846B, 0x56889B, 0x568B2F, 0x56A0CC,
 };
 
 // log2 for exact powers of two in [1, 2^31]; -1 if not a power of two.
