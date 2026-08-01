@@ -81,7 +81,7 @@ static void DumpMapStateOnce()
     FILE* f = nullptr;
     fopen_s(&f, path, "w");
     if (!f) return;
-    fprintf(f, "MapSizeExt diag @ operator[] call #%llu\n", calls);
+    fprintf(f, "MapSizeExt diag (first post-load cell access)\n");
     fprintf(f, "g_MapStride=%d  g_MapTotal=%d\n\n", g_MapStride, g_MapTotal);
     fprintf(f, "MapRect        X=%d Y=%d W=%d H=%d\n",   I(0xEC), I(0xF0), I(0xF4), I(0xF8));
     fprintf(f, "VisibleRect    X=%d Y=%d W=%d H=%d\n",   I(0xFC), I(0x100), I(0x104), I(0x108));
