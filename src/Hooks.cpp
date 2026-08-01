@@ -355,27 +355,24 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
 {
     if (g_MapStride > 512)
     {
-        DWORD pCoord = R->EAX();
-        int X = -1, Y = -1;
+        DWORD pCoord = R->EAX();   // CoordStruct* (leptons: X,Y,Z ints) from GetCoords
         if (pCoord)
         {
-            X = *reinterpret_cast<short*>(pCoord);
-            Y = *reinterpret_cast<short*>(reinterpret_cast<char*>(pCoord) + 2);
+            int lx = *reinterpret_cast<int*>(pCoord);          // X lepton
+            int ly = *reinterpret_cast<int*>(pCoord + 4);      // Y lepton
+            int lz = *reinterpret_cast<int*>(pCoord + 8);      // Z lepton
+            int cx = lx >> 8;                                  // lepton / 256 = cell
+            int cy = ly >> 8;
+            DWORD items = *reinterpret_cast<DWORD*>(0x87F7E8 + 0x13C);  // Cells.Items
+            int   idx   = cy * g_MapStride + cx;
+            DWORD cell  = 0;
+            if (items && idx >= 0 && idx < g_MapTotal)
+                cell = *reinterpret_cast<DWORD*>(items + idx * 4);
+            DeployDiagLog("CDU this=0x%X lept=(%d,%d,%d) cell=(%d,%d) idx=%d cellptr=0x%X\n",
+                R->ESI(), lx, ly, lz, cx, cy, idx, cell);
         }
-        // Resolve the cell through the same math the engine now uses.
-        DWORD items = *reinterpret_cast<DWORD*>(0x87F7E8 + 0x13C);  // Cells.Items
-        int   idx   = Y * g_MapStride + X;
-        DWORD cell  = 0;
-        if (items && idx >= 0 && idx < g_MapTotal)
-            cell = *reinterpret_cast<DWORD*>(items + idx * 4);
-        if (cell)
-            DeployDiagLog("CDU (%d,%d) idx=%d cell=0x%X occ[+0x24]=0x%X f[+0xEC]=0x%X w[+0x116]=0x%X\n",
-                X, Y, idx, cell,
-                *reinterpret_cast<DWORD*>(cell + 0x24),
-                *reinterpret_cast<DWORD*>(cell + 0xEC),
-                (unsigned)*reinterpret_cast<unsigned short*>(cell + 0x116));
         else
-            DeployDiagLog("CDU (%d,%d) idx=%d cell=NULL\n", X, Y, idx);
+            DeployDiagLog("CDU this=0x%X coordPtr=NULL\n", R->ESI());
     }
     R->ECX(0x87F7E8);   // replicate mov ecx,0x87f7e8
     return 0x700D74;
