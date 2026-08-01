@@ -234,3 +234,23 @@ DEFINE_HOOK(656EC0, RadarClass_UpdateMinimap_NullGuard, 5)
     }
     return 0;
 }
+
+// ============================================================
+//  Object radar-blip update null-guard (Stride > 512).
+//  gamemd 0x70D990 (a per-object __thiscall(1 arg) that plots the
+//  object onto the radar minimap) reads the .bss coordinate-transform
+//  singleton 0x880A04 UNCONDITIONALLY and calls a method on it. That
+//  singleton is written by NO code (gamemd/Ares/Antares) -> always
+//  null -> this path is dead in normal play and only executes once our
+//  x1024 coords route here -> AV at 0x70DA54. Skip the whole function
+//  when 0x880A04 is null. this = ECX; ret 4 (1 stack arg) so we jump to
+//  a bare `ret 4` (0x70DC42) -- NOT a plain `ret`, or the arg leaks.
+//  Stolen: sub esp,0x2c; push esi; mov esi,ecx = 6 bytes.
+//  NO-OP at stride 512 (this dead path isn't reached there anyway).
+// ============================================================
+DEFINE_HOOK(70D990, Object_PlotOnRadar_NullGuard, 6)
+{
+    if (g_MapStride > 512 && *reinterpret_cast<DWORD*>(0x00880A04) == 0)
+        return 0x70DC42;                // bare `ret 4` -> clean skip
+    return 0;
+}
