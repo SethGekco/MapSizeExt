@@ -23,6 +23,11 @@
 // null). Returns the number of sites successfully patched.
 int ApplyStridePatches(FILE* log);
 
+// Cell-pointer array population row stride (add ecx,0x200 @0x566437 -> stride).
+// NO-OP at 512. Without this, Items[] is filled at Y*512+X while operator[]
+// reads Y*1024+X -> every coordinate lookup hits a null cell (deploy/move fail).
+int ApplyCellArrayPopulationStride(FILE* log);
+
 // Rewrites every cell-array size limit (0x40000 = 512*512) in .text --
 // the inlined `cmp eax,0x40000` bounds checks and the `push 0x40000`
 // VectorClass reserve -- to g_MapTotal (stride*stride). NO-OP at stride

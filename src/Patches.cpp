@@ -142,6 +142,54 @@ int ApplyStridePatches(FILE* log)
 }
 
 // ============================================================
+//  Cell-pointer array POPULATION row stride  @ 0x566437
+//  The Cells.Items pointer array is filled by a nested loop inside the
+//  map-init function. Its ROW STRIDE is a hardcoded `add ecx,0x200`
+//  (add 512) -- NOT a `shl reg,9`, so the stride audit never saw it.
+//  The loop stores  Items[Y*512 + X] = cell  (verified: the MCV at
+//  cell (63,102) has its CellClass* at Items[102*512+63]=Items[52287],
+//  while operator[] now reads Items[102*1024+63]=Items[104511] = null).
+//  Result at stride 1024: every COORDINATE lookup (operator[]) hits a
+//  null cell -> deploy refuses, units cannot path/move, occupancy is
+//  wrong; terrain still renders because rendering walks Items[] linearly.
+//  Raise the row stride 0x200 -> g_MapStride so population and lookup
+//  agree. NO-OP at stride 512.
+//
+//    0x566437:  81 C1 00 02 00 00   add ecx,0x200
+//                        ^^^^^^^^^^^  imm32 @ +2  (patch to g_MapStride)
+// ============================================================
+int ApplyCellArrayPopulationStride(FILE* log)
+{
+    if (g_MapStride == 512)
+    {
+        if (log) fprintf(log, "[cellpop] row stride stays 512  [no-op]\n");
+        return 0;
+    }
+    const DWORD site  = 0x566437;
+    const DWORD immVA = site + 2;
+    if (*reinterpret_cast<BYTE*>(site)     != 0x81 ||
+        *reinterpret_cast<BYTE*>(site + 1) != 0xC1 ||
+        *reinterpret_cast<DWORD*>(immVA)   != 0x200)
+    {
+        if (log) fprintf(log, "[cellpop] SKIP 0x%06X: unexpected bytes (%02X %02X imm=0x%X)\n",
+                         site, *reinterpret_cast<BYTE*>(site),
+                         *reinterpret_cast<BYTE*>(site + 1),
+                         *reinterpret_cast<DWORD*>(immVA));
+        return 0;
+    }
+    DWORD oldProt = 0; void* p = reinterpret_cast<void*>(immVA);
+    if (!VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt))
+    {
+        if (log) fprintf(log, "[cellpop] SKIP 0x%06X: VirtualProtect failed\n", site);
+        return 0;
+    }
+    *reinterpret_cast<DWORD*>(immVA) = (DWORD)g_MapStride;
+    VirtualProtect(p, 4, oldProt, &oldProt);
+    if (log) fprintf(log, "[cellpop] row stride 512 -> %d @0x%06X\n", g_MapStride, site);
+    return 1;
+}
+
+// ============================================================
 //  Cell-array size limit (262144 = 0x40000 = 512*512).
 //  The engine inlines `cmp eax,0x40000` bounds checks all over
 //  (~405 sites) plus the VectorClass reserve `push 0x40000`

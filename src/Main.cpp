@@ -66,6 +66,7 @@ static void ApplyInit()
         fprintf(f, "IsoMapPack5 buffer patched to %ux%u (%u bytes)\n",
                 isoW, isoH, isoBytes);
         if (cfg.PatchStride)  ApplyStridePatches(f); else fprintf(f, "[stride]  DISABLED via INI\n");
+        if (cfg.PatchStride)  ApplyCellArrayPopulationStride(f); else fprintf(f, "[cellpop] DISABLED via INI\n");
         if (cfg.PatchBounds)  ApplyBoundsPatches(f, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0); else fprintf(f, "[bounds]  DISABLED via INI\n");
         if (cfg.PatchModules) ApplyModulePatches(f);  else fprintf(f, "[dll]     DISABLED via INI\n");
         if (cfg.PatchCoord)   ApplyCoordPatches(f);   else fprintf(f, "[coord]   DISABLED via INI\n");
@@ -77,6 +78,7 @@ static void ApplyInit()
     else
     {
         if (cfg.PatchStride)  ApplyStridePatches(nullptr);
+        if (cfg.PatchStride)  ApplyCellArrayPopulationStride(nullptr);
         if (cfg.PatchBounds)  ApplyBoundsPatches(nullptr, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0);
         if (cfg.PatchModules) ApplyModulePatches(nullptr);
         if (cfg.PatchCoord)   ApplyCoordPatches(nullptr);
