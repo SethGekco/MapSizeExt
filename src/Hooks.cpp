@@ -209,3 +209,28 @@ DEFINE_HOOK(657CE0, RadarClass_MinimapChanged_NullGuard, 5)
     }
     return 0;                           // surfaces exist -> run normally
 }
+
+// ============================================================
+//  Radar UpdateMinimap null-guard (Stride > 512) -- the second
+//  radar path. RadarClass::UpdateMinimap (0x656EC0) also draws to
+//  the (null-at-stride>512) radar surfaces; Antares's Lock/Unlock
+//  hooks (Bugfixes.Minimap.cpp @0x65731F/0x65757C) deref the null
+//  surface -> crash at gameplay (Antares+0x6FFA2). Same fix as
+//  MinimapChanged: skip the whole function when the surfaces are
+//  null by jumping to a bare `ret`. this = ECX = RadarClass::
+//  Instance; plain `ret` (epilogue 0x6578EA, no stack args).
+//  Stolen: sub esp,0x48; push ebx; push ebp = 5 bytes.
+// ============================================================
+DEFINE_HOOK(656EC0, RadarClass_UpdateMinimap_NullGuard, 5)
+{
+    if (g_MapStride > 512)
+    {
+        const DWORD radar = 0x87F7E8;   // RadarClass::Instance
+        if (*reinterpret_cast<DWORD*>(radar + 0x121C) == 0 ||
+            *reinterpret_cast<DWORD*>(radar + 0x1220) == 0)
+        {
+            return 0x657D3C;            // a bare `ret` -> clean skip
+        }
+    }
+    return 0;
+}
