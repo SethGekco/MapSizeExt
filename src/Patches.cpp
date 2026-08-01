@@ -528,3 +528,54 @@ int ApplyAdjacencyPatch(FILE* log)
                      table[0],table[1],table[2],table[3],table[4],table[5],table[6],table[7]);
     return 8;
 }
+
+// ============================================================
+//  Isometric/tactical-render cell sites (Stride > 512) -- EXPERIMENTAL.
+//  Six `shl reg,0x9` sites in the tactical renderer (0x4D0xxx) were
+//  originally excluded as "screen projection", but each is preceded by
+//  lepton->cell (sar reg,0x8 = /256) and feeds an index into the buffer
+//  at global 0x8b3cc4 -- i.e. they are CELL-index computations, not
+//  pixel math. At stride>512 leaving them at *512 mis-indexes the
+//  tactical cell buffer -> top-right dead cells + flicker. Same
+//  shift-immediate rewrite as the main stride sites. Gated behind
+//  [Debug] PatchIso (default 0) because a misclassification here would
+//  garble the whole view -> flip it on to test, off to revert.
+// ============================================================
+static const DWORD kIsoStrideSites[] =
+{
+    0x4D0BBA, 0x4D0DF5, 0x4D1062, 0x4D1553, 0x4D16FA, 0x4D2682,
+};
+
+int ApplyIsoPatches(FILE* log)
+{
+    const int shift = Log2Exact(g_MapStride);
+    const int count = (int)(sizeof(kIsoStrideSites) / sizeof(kIsoStrideSites[0]));
+    if (shift < 0 || shift == 9)
+    {
+        if (log) fprintf(log, "[iso] tactical cell sites stay *512 (stride %d)  [no-op]\n",
+                         g_MapStride);
+        return 0;
+    }
+    int patched = 0;
+    for (int i = 0; i < count; ++i)
+    {
+        const DWORD va = kIsoStrideSites[i];
+        if (*reinterpret_cast<BYTE*>(va) != 0xC1 ||
+            (*reinterpret_cast<BYTE*>(va + 1) & 0xF8) != 0xE0 ||
+            *reinterpret_cast<BYTE*>(va + 2) != 0x09)
+        {
+            if (log) fprintf(log, "[iso] SKIP 0x%06X: unexpected bytes\n", va);
+            continue;
+        }
+        DWORD oldProt = 0; void* p = reinterpret_cast<void*>(va + 2);
+        if (VirtualProtect(p, 1, PAGE_EXECUTE_READWRITE, &oldProt))
+        {
+            *reinterpret_cast<BYTE*>(va + 2) = (BYTE)shift;
+            VirtualProtect(p, 1, oldProt, &oldProt);
+            ++patched;
+        }
+    }
+    if (log) fprintf(log, "[iso] tactical cell sites -> stride %d : patched %d/%d\n",
+                     g_MapStride, patched, count);
+    return patched;
+}

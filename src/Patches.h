@@ -42,6 +42,10 @@ int ApplyModulePatches(FILE* log);
 // Fixes ore/gem spread and index-based neighbour walks. NO-OP at 512.
 int ApplyAdjacencyPatch(FILE* log);
 
+// EXPERIMENTAL: rewrite the 6 tactical-render iso cell sites (0x4D0xxx) to
+// the stride. Gated by [Debug] PatchIso (default 0). NO-OP at 512.
+int ApplyIsoPatches(FILE* log);
+
 // Forces the safe DisplayClass render path at 0x657CF0 (avoids the Ares
 // +0x7C override that dereferences the never-initialized 0x880A04).
 int ApplyGuardPatches(FILE* log);

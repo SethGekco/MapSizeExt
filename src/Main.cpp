@@ -71,6 +71,7 @@ static void ApplyInit()
         if (cfg.PatchCoord)   ApplyCoordPatches(f);   else fprintf(f, "[coord]   DISABLED via INI\n");
         if (cfg.PatchGuard)   ApplyGuardPatches(f);   else fprintf(f, "[guard]   DISABLED via INI\n");
         if (cfg.PatchAdjacency) ApplyAdjacencyPatch(f); else fprintf(f, "[adj]     DISABLED via INI\n");
+        if (cfg.PatchIso)     ApplyIsoPatches(f);     else fprintf(f, "[iso]     DISABLED via INI\n");
         fclose(f);
     }
     else
@@ -81,6 +82,7 @@ static void ApplyInit()
         if (cfg.PatchCoord)   ApplyCoordPatches(nullptr);
         if (cfg.PatchGuard)   ApplyGuardPatches(nullptr);
         if (cfg.PatchAdjacency) ApplyAdjacencyPatch(nullptr);
+        if (cfg.PatchIso)     ApplyIsoPatches(nullptr);
     }
 }
 
