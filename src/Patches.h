@@ -37,6 +37,11 @@ int ApplyCoordPatches(FILE* log);
 // their GetModuleHandle base) to match gamemd's stride. NO-OP at 512.
 int ApplyModulePatches(FILE* log);
 
+// Rewrites the static 8-neighbour cell-adjacency offset table @0x7E3774
+// ([-512,-511,1,513,512,511,-1,-513]) to the current stride (row*stride+col).
+// Fixes ore/gem spread and index-based neighbour walks. NO-OP at 512.
+int ApplyAdjacencyPatch(FILE* log);
+
 // Forces the safe DisplayClass render path at 0x657CF0 (avoids the Ares
 // +0x7C override that dereferences the never-initialized 0x880A04).
 int ApplyGuardPatches(FILE* log);

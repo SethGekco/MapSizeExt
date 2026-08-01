@@ -484,3 +484,47 @@ int ApplyGuardPatches(FILE* log)
     }
     return 0;
 }
+
+// ============================================================
+//  Cell-adjacency offset table @ 0x7E3774 (Stride > 512).
+//  The engine's 8-neighbour cell offsets are a static .rdata table:
+//    [-512,-511,1,513,512,511,-1,-513]  (N,NE,E,SE,S,SW,W,NW @ stride 512)
+//  Ore/gem spread, some pathfinding and other neighbour walks add
+//  these to a cell index. Each entry is row*512 + col (col in -1..1);
+//  at stride 1024 it must be row*1024 + col, else "the cell below" (+512)
+//  points into the wrong row -> ore scatters, adjacency breaks.
+//  Verify the exact vanilla values before writing; NO-OP at stride 512.
+// ============================================================
+int ApplyAdjacencyPatch(FILE* log)
+{
+    if (g_MapStride == 512)
+    {
+        if (log) fprintf(log, "[adj] neighbour table stays 512  [no-op]\n");
+        return 0;
+    }
+    const DWORD va = 0x007E3774;
+    int* const table = reinterpret_cast<int*>(va);
+    const int expected[8] = { -512, -511, 1, 513, 512, 511, -1, -513 };
+    for (int i = 0; i < 8; ++i)
+        if (table[i] != expected[i])
+        {
+            if (log) fprintf(log, "[adj] SKIP: table[%d]=%d != %d (unexpected)\n",
+                             i, table[i], expected[i]);
+            return 0;
+        }
+    DWORD oldProt = 0;
+    if (!VirtualProtect(reinterpret_cast<void*>(va), 32, PAGE_EXECUTE_READWRITE, &oldProt))
+        return 0;
+    for (int i = 0; i < 8; ++i)
+    {
+        const int O   = expected[i];
+        const int row = (O >= 256) ? (O + 256) / 512
+                      : (O <= -256) ? (O - 256) / 512 : 0;      // -1,0,+1
+        table[i] = O + row * (g_MapStride - 512);               // row*stride + col
+    }
+    VirtualProtect(reinterpret_cast<void*>(va), 32, oldProt, &oldProt);
+    if (log) fprintf(log, "[adj] neighbour table -> stride %d: "
+                     "[%d,%d,%d,%d,%d,%d,%d,%d]\n", g_MapStride,
+                     table[0],table[1],table[2],table[3],table[4],table[5],table[6],table[7]);
+    return 8;
+}
