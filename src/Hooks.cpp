@@ -42,25 +42,44 @@ int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
 //    5656F8: mov edx,[esp+8]  <- resume target on success
 //  Entry: eax = Y (movsx), ecx = X (movsx).
 // ============================================================
-// Diagnostic: once, in-game (after the map is loaded), dump MapClass::Instance's
-// dimension/rect fields so we can see the map's ACTUAL runtime layout vs our
-// x1024 metadata. Writes MapSizeExt_diag.log in the game dir. Stride>512 only.
-static void DumpMapStateOnce(DWORD mapThis)
+// Diagnostic: dump MapClass::Instance's real dimension/rect fields once we are
+// deep enough into gameplay that the map is fully loaded, so we can compare the
+// map's ACTUAL runtime layout against our x1024 metadata. Offsets below are
+// derived from YRpp/MapClass.h (verified against the +0x14C MaxNumCells anchor):
+//   MapRect        @ 0xEC  (X,Y,Width,Height)
+//   VisibleRect    @ 0xFC  (X,Y,Width,Height)
+//   MapCoordBounds @ 0x124 (Left,Top,Right,Bottom)
+//   Cells vector   @ 0x138 (Items,Capacity,IsAllocated)
+//   MaxWidth 0x144 / MaxHeight 0x148 / MaxNumCells 0x14C
+// Trigger by call-count (unconditional) rather than a "map ready" guess -- the
+// previous field-guard version never fired, so we no longer trust any single
+// field to signal readiness. operator[] is called constantly in-game, so this
+// lands well after load. Writes MapSizeExt_diag.log in the game dir.
+static void DumpMapStateOnce()
 {
     static bool done = false;
+    static unsigned long long calls = 0;
     if (done || g_MapStride <= 512) return;
-    if (mapThis == 0 || *reinterpret_cast<int*>(mapThis + 0x14c) <= 0) return; // not ready
+    if (++calls < 300000ULL) return;   // wait until we're clearly in a live game
     done = true;
+
+    const DWORD m = 0x87F7E8;          // MapClass::Instance object base
+    auto I = [m](DWORD off) { return *reinterpret_cast<int*>(m + off); };
+    auto U = [m](DWORD off) { return *reinterpret_cast<DWORD*>(m + off); };
+
     FILE* f = nullptr;
     fopen_s(&f, "MapSizeExt_diag.log", "w");
     if (!f) return;
-    fprintf(f, "MapClass this=0x%X  g_MapStride=%d g_MapTotal=%d\n", mapThis, g_MapStride, g_MapTotal);
-    fprintf(f, "MAP_CELL_W[+0x14c]=%d  MAP_CELL_H[+0x150]=%d  Total[+0x154]=%d  Count[+0x140]=%d\n",
-        *reinterpret_cast<int*>(mapThis + 0x14c), *reinterpret_cast<int*>(mapThis + 0x150),
-        *reinterpret_cast<int*>(mapThis + 0x154), *reinterpret_cast<int*>(mapThis + 0x140));
-    for (DWORD off = 0xE0; off <= 0x160; off += 4)
-        fprintf(f, "  [+0x%03X] = %11d  (0x%08X)\n", off,
-                *reinterpret_cast<int*>(mapThis + off), *reinterpret_cast<DWORD*>(mapThis + off));
+    fprintf(f, "MapSizeExt diag @ operator[] call #%llu\n", calls);
+    fprintf(f, "g_MapStride=%d  g_MapTotal=%d\n\n", g_MapStride, g_MapTotal);
+    fprintf(f, "MapRect        X=%d Y=%d W=%d H=%d\n",   I(0xEC), I(0xF0), I(0xF4), I(0xF8));
+    fprintf(f, "VisibleRect    X=%d Y=%d W=%d H=%d\n",   I(0xFC), I(0x100), I(0x104), I(0x108));
+    fprintf(f, "MapCoordBounds L=%d T=%d R=%d B=%d\n",   I(0x124), I(0x128), I(0x12C), I(0x130));
+    fprintf(f, "Cells.Items=0x%08X Capacity=%d IsAllocated=%d\n", U(0x138), I(0x13C), I(0x140) & 0xFF);
+    fprintf(f, "MaxWidth=%d  MaxHeight=%d  MaxNumCells=%d\n\n", I(0x144), I(0x148), I(0x14C));
+    fprintf(f, "-- raw window 0xE0..0x158 --\n");
+    for (DWORD off = 0xE0; off <= 0x158; off += 4)
+        fprintf(f, "  [+0x%03X] = %11d  (0x%08X)\n", off, I(off), U(off));
     fclose(f);
 }
 
@@ -71,7 +90,7 @@ DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
     int index = y * g_MapStride + x;
     R->EAX(index);
 
-    DumpMapStateOnce(0x87F7E8);   // MapClass::Instance singleton (diagnostic, once)
+    DumpMapStateOnce();           // MapClass::Instance dimension dump (diagnostic, once)
 
     if (index < 0)             return 0x565709;  // js  (negative)
     if (index >= g_MapTotal)   return 0x565709;  // cmp/jge (out of bounds)
