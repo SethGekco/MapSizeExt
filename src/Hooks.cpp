@@ -355,24 +355,18 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
 {
     if (g_MapStride > 512)
     {
-        DWORD pCoord = R->EAX();   // CoordStruct* (leptons: X,Y,Z ints) from GetCoords
-        if (pCoord)
-        {
-            int lx = *reinterpret_cast<int*>(pCoord);          // X lepton
-            int ly = *reinterpret_cast<int*>(pCoord + 4);      // Y lepton
-            int lz = *reinterpret_cast<int*>(pCoord + 8);      // Z lepton
-            int cx = lx >> 8;                                  // lepton / 256 = cell
-            int cy = ly >> 8;
-            DWORD items = *reinterpret_cast<DWORD*>(0x87F7E8 + 0x13C);  // Cells.Items
-            int   idx   = cy * g_MapStride + cx;
-            DWORD cell  = 0;
-            if (items && idx >= 0 && idx < g_MapTotal)
-                cell = *reinterpret_cast<DWORD*>(items + idx * 4);
-            DeployDiagLog("CDU this=0x%X lept=(%d,%d,%d) cell=(%d,%d) idx=%d cellptr=0x%X\n",
-                R->ESI(), lx, ly, lz, cx, cy, idx, cell);
-        }
-        else
-            DeployDiagLog("CDU this=0x%X coordPtr=NULL\n", R->ESI());
+        // At this point EDX = X-lepton (set by `mov edx,[eax]` @700D68, consumed
+        // @700D74). The full CoordStruct out-param lives on the stack; dump a
+        // window so we can locate (X,Y,Z) reliably by matching co==EDX.
+        int   edxX = R->EDX<int>();
+        DWORD sp   = R->ESP();
+        char buf[256]; int n = 0;
+        n += _snprintf_s(buf + n, sizeof(buf) - n, _TRUNCATE,
+                         "CDU this=0x%X edxX=%d  stack:", R->ESI(), edxX);
+        for (DWORD off = 0x28; off <= 0x3C; off += 4)
+            n += _snprintf_s(buf + n, sizeof(buf) - n, _TRUNCATE,
+                             " [+%02X]=%d", off, *reinterpret_cast<int*>(sp + off));
+        DeployDiagLog("%s\n", buf);
     }
     R->ECX(0x87F7E8);   // replicate mov ecx,0x87f7e8
     return 0x700D74;
