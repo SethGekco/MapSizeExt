@@ -316,14 +316,14 @@ DEFINE_HOOK(70D990, Object_PlotOnRadar_NullGuard, 6)
 
 // ============================================================
 //  DEPLOY DIAGNOSTIC (stride > 512 only)
-//  MapClass::CanBuildingTypeBePlacedHere @0x4A8EB0 is the deploy/
-//  placement validity check. On a normal map at stride 1024 the MCV
-//  refuses to deploy ("area blocked"). The cell lookup inside (call
-//  0x5657a0 = operator[]) is patched, so we log:
-//    (a) each call's target cell (arg4 = CellStruct*, X=[edi], Y=[edi+2])
-//    (b) each "blocker found" mark (0x4A9027) with the occupier object
-//  to see whether the coord is sane and what the check treats as a
-//  blocker. Appends to MapSizeExt_deploy.log (abs path, capped).
+//  TechnoClass::CanDeploySlashUnload @0x700D50 is the real deploy/
+//  unload validity check (returns bool; false => the "blocked" cursor).
+//  It fetches the unit's coords (virtual [this+0x1b8]) then operator[]
+//  (patched) and runs cell predicates (0x484AE0 etc). On a normal map
+//  at stride 1024 the MCV refuses to deploy though every cell read is
+//  patched -- so log the coord the check sees and dump that cell's
+//  occupancy fields to tell whether the cell is (wrongly) seen as
+//  blocked. Appends to MapSizeExt_deploy.log (abs path, capped).
 // ============================================================
 static void DeployDiagLog(const char* fmt, ...)
 {
@@ -344,32 +344,39 @@ static void DeployDiagLog(const char* fmt, ...)
     ++lines;
 }
 
-// Entry: log the target cell. Stolen: mov eax,ds:0xa83d4c (5 bytes).
-DEFINE_HOOK(4A8EB0, CanBTBPH_Entry_Diag, 5)
+// Inside CanDeploySlashUnload, at the operator[] setup:
+//   700D6F: mov ecx,0x87f7e8   (5 bytes: B9 E8 F7 87 00)  <- clean, no esp/call
+// At this point EAX = pointer to the unit's coord/cell struct (from the
+// virtual GetCoords at 700D62). Log the (X,Y) it will look up and, via our
+// own stride math, dump the target cell's occupancy fields. This both
+// CONFIRMS this is the deploy path (does it fire?) and shows whether the
+// cell is wrongly seen as occupied/impassable.
+DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
 {
     if (g_MapStride > 512)
     {
-        DWORD esp   = R->ESP();
-        void* pCell = *reinterpret_cast<void**>(esp + 0x10);  // arg4 = CellStruct*
-        void* pType = *reinterpret_cast<void**>(esp + 0x0C);  // arg3 = BuildingType*
+        DWORD pCoord = R->EAX();
         int X = -1, Y = -1;
-        if (pCell) { X = *reinterpret_cast<short*>(pCell); Y = *reinterpret_cast<short*>(reinterpret_cast<char*>(pCell) + 2); }
-        DeployDiagLog("CanBTBPH cell=(%d,%d) type=0x%p\n", X, Y, pType);
+        if (pCoord)
+        {
+            X = *reinterpret_cast<short*>(pCoord);
+            Y = *reinterpret_cast<short*>(reinterpret_cast<char*>(pCoord) + 2);
+        }
+        // Resolve the cell through the same math the engine now uses.
+        DWORD items = *reinterpret_cast<DWORD*>(0x87F7E8 + 0x13C);  // Cells.Items
+        int   idx   = Y * g_MapStride + X;
+        DWORD cell  = 0;
+        if (items && idx >= 0 && idx < g_MapTotal)
+            cell = *reinterpret_cast<DWORD*>(items + idx * 4);
+        if (cell)
+            DeployDiagLog("CDU (%d,%d) idx=%d cell=0x%X occ[+0x24]=0x%X f[+0xEC]=0x%X w[+0x116]=0x%X\n",
+                X, Y, idx, cell,
+                *reinterpret_cast<DWORD*>(cell + 0x24),
+                *reinterpret_cast<DWORD*>(cell + 0xEC),
+                (unsigned)*reinterpret_cast<unsigned short*>(cell + 0x116));
+        else
+            DeployDiagLog("CDU (%d,%d) idx=%d cell=NULL\n", X, Y, idx);
     }
-    R->EAX(*reinterpret_cast<DWORD*>(0x00A83D4C));  // replicate stolen mov
-    return 0x4A8EB5;
-}
-
-// Blocker-found marker: mov [esp+0x3c],1 (5 bytes: C6 44 24 3C 01).
-// esi = the occupier object; *(DWORD*)esi = its vtable (identifies type).
-DEFINE_HOOK(4A9027, CanBTBPH_Blocker_Diag, 5)
-{
-    if (g_MapStride > 512)
-    {
-        DWORD esi = R->ESI();
-        DWORD vt  = esi ? *reinterpret_cast<DWORD*>(esi) : 0;
-        DeployDiagLog("   BLOCKER occupier=0x%X vtbl=0x%X\n", esi, vt);
-    }
-    *reinterpret_cast<BYTE*>(R->ESP() + 0x3C) = 1;  // replicate stolen store
-    return 0x4A902C;
+    R->ECX(0x87F7E8);   // replicate mov ecx,0x87f7e8
+    return 0x700D74;
 }
