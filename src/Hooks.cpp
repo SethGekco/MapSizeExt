@@ -60,15 +60,23 @@ static void DumpMapStateOnce()
     static bool done = false;
     static unsigned long long calls = 0;
     if (done || g_MapStride <= 512) return;
-    if (++calls < 300000ULL) return;   // wait until we're clearly in a live game
+    if (++calls < 50000ULL) return;    // wait until we're clearly in a live game
     done = true;
 
     const DWORD m = 0x87F7E8;          // MapClass::Instance object base
     auto I = [m](DWORD off) { return *reinterpret_cast<int*>(m + off); };
     auto U = [m](DWORD off) { return *reinterpret_cast<DWORD*>(m + off); };
 
+    // Absolute path in the game exe dir (CWD at gameplay-time is NOT the exe dir,
+    // which is why the earlier relative-path dumps never appeared).
+    char path[MAX_PATH];
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    char* slash = strrchr(path, '\\');
+    if (slash) *(slash + 1) = '\0';
+    strcat_s(path, "MapSizeExt_diag.log");
+
     FILE* f = nullptr;
-    fopen_s(&f, "MapSizeExt_diag.log", "w");
+    fopen_s(&f, path, "w");
     if (!f) return;
     fprintf(f, "MapSizeExt diag @ operator[] call #%llu\n", calls);
     fprintf(f, "g_MapStride=%d  g_MapTotal=%d\n\n", g_MapStride, g_MapTotal);
@@ -145,6 +153,7 @@ DEFINE_HOOK(483B32, MapClass_InlineAccess_Stride, 6)
 {
     R->EDI(R->EDI<int>() * g_MapStride);                    // shl edi,0x9
     *reinterpret_cast<int*>(R->ESI() + 0xFC) = R->EBX();    // mov [esi+0xfc],ebx
+    DumpMapStateOnce();                                     // diagnostic (once)
     return 0x483B3B;                                        // mov eax,ds:0x87f924
 }
 
@@ -175,6 +184,7 @@ DEFINE_HOOK(565757, MapClass_LeptonOp_Stride, 5)
 DEFINE_HOOK(5657F1, IsCellValid_Stride, 5)
 {
     R->EDX(R->EDX<int>() * g_MapStride + R->EAX<int>());
+    DumpMapStateOnce();  // diagnostic (once)
     return 0x5657F6;  // cmp [ecx+edx*4],0x0
 }
 
