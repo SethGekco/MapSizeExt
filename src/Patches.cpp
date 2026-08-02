@@ -547,15 +547,15 @@ int ApplyModulePatches(FILE* log)
         const DWORD* andm; int nand;
         const DWORD* sar;  int nsar;
     };
-    // Phobos moved to ApplyPhobosPatches (complete, current-build list).
-    // Ares.dll is not loaded under Antares, but kept here for completeness.
     const Mod mods[] = {
         { "Ares.dll",   kAresShl,   kAresShl_n,   kAresCmp40,   kAresCmp40_n,
                         0, 0, 0, 0 },
+        { "Phobos.dll", kPhobosShl, kPhobosShl_n, kPhobosCmp40, kPhobosCmp40_n,
+                        kPhobosAnd1ff, kPhobosAnd1ff_n, kPhobosSar9, kPhobosSar9_n },
     };
 
     int grand = 0;
-    for (int m = 0; m < 1; ++m)
+    for (int m = 0; m < 2; ++m)
     {
         const Mod& M = mods[m];
         HMODULE h = GetModuleHandleA(M.name);
