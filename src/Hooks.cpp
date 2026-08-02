@@ -400,7 +400,6 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
             DeployDiagLog("  %s\n", line);
         }
     }
-    }
     R->ECX(0x87F7E8);   // replicate mov ecx,0x87f7e8
     return 0x700D74;
 }
