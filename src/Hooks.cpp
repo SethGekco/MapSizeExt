@@ -403,3 +403,28 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
     R->ECX(0x87F7E8);   // replicate mov ecx,0x87f7e8
     return 0x700D74;
 }
+
+// ============================================================
+//  REVEAL DIAGNOSTIC: RevealArea2 shroud write @ 0x567F34
+//    88 83 20 01 00 00   mov [ebx+0x120],al   (6 bytes)
+//  ebx = the cell being revealed; al = new Shroudedness. Log the cell's
+//  MapCoords (+0x24/+0x26), the value written, and its Flags (+0x140,
+//  whose low bits 0x3 are the "mapped/revealed" state 0x6d8700 keys on).
+//  Shows whether reveal writes odd rows at all and whether their Flags
+//  are set. Budget-capped via DeployDiagLog. Stride>512 only.
+// ============================================================
+DEFINE_HOOK(567F34, RevealArea2_ShroudWrite_Diag, 6)
+{
+    if (g_MapStride > 512)
+    {
+        DWORD cell = R->EBX();
+        int cxr = *reinterpret_cast<short*>(cell + 0x24);
+        int cyr = *reinterpret_cast<short*>(cell + 0x26);
+        signed char al = static_cast<signed char>(R->EAX() & 0xFF);
+        DWORD flags = *reinterpret_cast<DWORD*>(cell + 0x140);
+        DeployDiagLog("REVEAL (%d,%d) new=%d flags=0x%X rev=%d\n",
+                      cxr, cyr, (int)al, flags, (int)(flags & 0x3));
+    }
+    *reinterpret_cast<signed char*>(R->EBX() + 0x120) = static_cast<signed char>(R->EAX() & 0xFF);
+    return 0x567F3A;
+}
