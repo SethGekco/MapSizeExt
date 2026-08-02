@@ -328,7 +328,7 @@ DEFINE_HOOK(70D990, Object_PlotOnRadar_NullGuard, 6)
 static void DeployDiagLog(const char* fmt, ...)
 {
     static int lines = 0;
-    if (g_MapStride <= 512 || lines >= 200) return;
+    if (g_MapStride <= 512 || lines >= 500) return;
     char path[MAX_PATH];
     GetModuleFileNameA(nullptr, path, MAX_PATH);
     char* slash = strrchr(path, '\\');
@@ -370,13 +370,21 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
         //   '!' cell EXISTS but its stored MapCoords != its array position
         //       (cell-identity mismatch -> would break pathfinding/movement)
         // Shroudedness @ cell+0x120 (char); MapCoords.X@+0x24, .Y@+0x26 (shorts).
-        DeployDiagLog("=== visibility/identity grid around MCV cell (%d,%d), stride %d ===\n",
+        // WHOLE-MAP dump (cells 0..159 in both axes, one char each) so we can SEE
+        // the geometry: where the MCV is (@) vs where the revealed region is.
+        // A mirror/fold will be obvious (MCV bottom-left, reveal top-right).
+        //   ' ' occluded/never-seen (-2)   '.' fog   'V' visible(-1)
+        //   '@' MCV cell                    '#' null cell   '!' coord-mismatch
+        // Shroudedness @ cell+0x120 (char); MapCoords.X@+0x24, .Y@+0x26.
+        const int N = 160;   // covers the full 128-ish coord range with margin
+        DeployDiagLog("=== WHOLE-MAP shroud grid, MCV at cell (%d,%d), stride %d ===\n",
                       cx, cy, g_MapStride);
-        DeployDiagLog("legend: @=mcv V=visible O=occluded .=fog #=nullcell !=coord-mismatch\n");
-        for (int gy = cy - 8; gy <= cy + 8; ++gy)
+        DeployDiagLog("legend: @=mcv V=visible .=fog (space)=occluded #=null !=mismatch  cols 0..%d\n", N-1);
+        for (int gy = 0; gy < N; ++gy)
         {
-            char line[64]; int n = 0;
-            for (int gx = cx - 8; gx <= cx + 8 && n < 60; ++gx)
+            char line[N + 4]; int n = 0;
+            bool any = false;
+            for (int gx = 0; gx < N; ++gx)
             {
                 char ch;
                 int idx = gy * g_MapStride + gx;
@@ -388,16 +396,19 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
                     int mcx = *reinterpret_cast<short*>(cell + 0x24);
                     int mcy = *reinterpret_cast<short*>(cell + 0x26);
                     char sh = *reinterpret_cast<char*>(cell + 0x120);
-                    if (mcx != gx || mcy != gy) ch = '!';          // identity mismatch
-                    else if (gx == cx && gy == cy) ch = '@';
-                    else if (sh == -1) ch = 'V';
-                    else if (sh == -2) ch = 'O';
-                    else ch = '.';
+                    if (gx == cx && gy == cy) ch = '@';
+                    else if (mcx != gx || mcy != gy) ch = '!';
+                    else if (sh == -1) { ch = 'V'; any = true; }
+                    else if (sh == -2) ch = ' ';
+                    else { ch = '.'; any = true; }
                 }
+                if (ch != ' ' && ch != '#') any = true;
                 line[n++] = ch;
             }
             line[n] = '\0';
-            DeployDiagLog("  %s\n", line);
+            // Only log rows that have SOMETHING interesting (revealed / MCV / mismatch),
+            // to keep the log within the line cap; prefix the row number.
+            if (any) DeployDiagLog("y%03d|%s\n", gy, line);
         }
     }
     R->ECX(0x87F7E8);   // replicate mov ecx,0x87f7e8
@@ -415,7 +426,7 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
 // ============================================================
 DEFINE_HOOK(567F34, RevealArea2_ShroudWrite_Diag, 6)
 {
-    if (g_MapStride > 512)
+    if (false)   // disabled: this path did not fire; keep hook inert
     {
         DWORD cell = R->EBX();
         int cxr = *reinterpret_cast<short*>(cell + 0x24);
