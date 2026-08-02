@@ -353,42 +353,53 @@ static void DeployDiagLog(const char* fmt, ...)
 // cell is wrongly seen as occupied/impassable.
 DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
 {
-    if (g_MapStride > 512)
+    static bool gridDone = false;
+    if (g_MapStride > 512 && !gridDone)
     {
-        // ESI = this (the deploying object). Read its stored Location directly
-        // (ObjectClass::Location @ +0x9C, leptons X/Y/Z) -- unambiguous, no
-        // stack/register guessing. Convert leptons>>8 to cell and look it up.
+        gridDone = true;
+        // MCV cell from its stored Location (leptons @ +0x9C).
         DWORD self = R->ESI();
-        int lx = *reinterpret_cast<int*>(self + 0x9C);
-        int ly = *reinterpret_cast<int*>(self + 0xA0);
-        int lz = *reinterpret_cast<int*>(self + 0xA4);
-        int cx = lx >> 8;
-        int cy = ly >> 8;
+        int cx = *reinterpret_cast<int*>(self + 0x9C) >> 8;
+        int cy = *reinterpret_cast<int*>(self + 0xA0) >> 8;
         DWORD items = *reinterpret_cast<DWORD*>(0x87F7E8 + 0x13C);  // Cells.Items
-        // Look up the SAME cell at both strides. If the 512-strided slot holds a
-        // real cell but the 1024-strided slot is null, the cell-pointer array was
-        // populated at stride 512 (an unpatched population loop) while operator[]
-        // reads at 1024 -> the smoking gun.
-        int  idx1024 = cy * 1024 + cx;
-        int  idx512  = cy * 512  + cx;
-        DWORD c1024 = 0, c512 = 0;
-        if (items)
+
+        // Dump an ASCII grid around the MCV. For each cell:
+        //   '#' null cell pointer (should be none now)
+        //   'V' Shroudedness==-1 (revealed/visible)   'O' ==-2 (occluded)
+        //   '.' fogged (0..48)                          '@' the MCV's own cell
+        //   '!' cell EXISTS but its stored MapCoords != its array position
+        //       (cell-identity mismatch -> would break pathfinding/movement)
+        // Shroudedness @ cell+0x120 (char); MapCoords.X@+0x24, .Y@+0x26 (shorts).
+        DeployDiagLog("=== visibility/identity grid around MCV cell (%d,%d), stride %d ===\n",
+                      cx, cy, g_MapStride);
+        DeployDiagLog("legend: @=mcv V=visible O=occluded .=fog #=nullcell !=coord-mismatch\n");
+        for (int gy = cy - 8; gy <= cy + 8; ++gy)
         {
-            if (idx1024 >= 0 && idx1024 < (1024*1024)) c1024 = *reinterpret_cast<DWORD*>(items + idx1024 * 4);
-            if (idx512  >= 0 && idx512  < (1024*1024)) c512  = *reinterpret_cast<DWORD*>(items + idx512  * 4);
-        }
-        // Also scan the 4 rows around cy at 1024 stride: how many non-null in [cx-2..cx+2]?
-        int hits1024 = 0, hits512 = 0;
-        if (items)
-            for (int yy = cy - 1; yy <= cy + 1; ++yy)
-                for (int xx = cx - 2; xx <= cx + 2; ++xx)
+            char line[64]; int n = 0;
+            for (int gx = cx - 8; gx <= cx + 8 && n < 60; ++gx)
+            {
+                char ch;
+                int idx = gy * g_MapStride + gx;
+                DWORD cell = (items && idx >= 0 && idx < g_MapTotal)
+                             ? *reinterpret_cast<DWORD*>(items + idx * 4) : 0;
+                if (!cell) ch = '#';
+                else
                 {
-                    int i1 = yy * 1024 + xx, i5 = yy * 512 + xx;
-                    if (i1 >= 0 && i1 < 1024*1024 && *reinterpret_cast<DWORD*>(items + i1 * 4)) ++hits1024;
-                    if (i5 >= 0 && i5 < 1024*1024 && *reinterpret_cast<DWORD*>(items + i5 * 4)) ++hits512;
+                    int mcx = *reinterpret_cast<short*>(cell + 0x24);
+                    int mcy = *reinterpret_cast<short*>(cell + 0x26);
+                    char sh = *reinterpret_cast<char*>(cell + 0x120);
+                    if (mcx != gx || mcy != gy) ch = '!';          // identity mismatch
+                    else if (gx == cx && gy == cy) ch = '@';
+                    else if (sh == -1) ch = 'V';
+                    else if (sh == -2) ch = 'O';
+                    else ch = '.';
                 }
-        DeployDiagLog("CDU loc=(%d,%d,%d) cell=(%d,%d)  c1024[%d]=0x%X c512[%d]=0x%X  neigh(nonnull) 1024=%d 512=%d\n",
-            lx, ly, lz, cx, cy, idx1024, c1024, idx512, c512, hits1024, hits512);
+                line[n++] = ch;
+            }
+            line[n] = '\0';
+            DeployDiagLog("  %s\n", line);
+        }
+    }
     }
     R->ECX(0x87F7E8);   // replicate mov ecx,0x87f7e8
     return 0x700D74;
