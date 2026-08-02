@@ -439,3 +439,28 @@ DEFINE_HOOK(567F34, RevealArea2_ShroudWrite_Diag, 6)
     *reinterpret_cast<signed char*>(R->EBX() + 0x120) = static_cast<signed char>(R->EAX() & 0xFF);
     return 0x567F3A;
 }
+
+// ============================================================
+//  0x880A04 null-singleton crash guard  @ 0x660540
+//  This gamemd function (thiscall; its only ret is a bare `ret` c3 at
+//  0x660729) does a small coord-offset loop then UNCONDITIONALLY enters
+//  a loop that dereferences the coord-transform singleton at ds:0x880A04
+//  and calls virtuals on it (`mov esi,[ecx]; call [esi+0x78]` @0x66058C).
+//  0x880A04 is written by NO code in gamemd (18 reads, 0 writes) -> it is
+//  always null, so this whole function is DEAD in vanilla (never reached).
+//  Our x1024 coords wrongly route here -> guaranteed AV at 0x66058C
+//  (seen on deploy / sell / game-end). Since the function always crashes
+//  when reached and does nothing reachable when the singleton is null,
+//  skip it cleanly: at entry ESP = return address, and the function takes
+//  no stack args (ret c3), so redirect to a bare `ret` (0x66053A) to
+//  return to the caller with a balanced stack. eax=0 as a safe result.
+// ============================================================
+DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 5)
+{
+    if (*reinterpret_cast<DWORD*>(0x00880A04) == 0)
+    {
+        R->EAX(0);
+        return 0x66053A;   // a bare `ret` (c3) -> clean return to caller
+    }
+    return 0;              // singleton non-null (never happens) -> run original
+}

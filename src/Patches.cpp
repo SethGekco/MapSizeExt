@@ -451,6 +451,55 @@ static int PatchImm32(DWORD va, int off, DWORD expect, DWORD nv)
     VirtualProtect(p, 4, old, &old); return 1;
 }
 
+// ============================================================
+//  Antares.dll cell-index patch.
+//  Antares REIMPLEMENTS large parts of the engine (e.g. the shroud
+//  reveal via its MapRevealer class) and looks up cells with YRpp's
+//  GetCellAt -> GetCellIndex = (Y << 9) + X and MaxCells = 0x40000,
+//  BOTH inlined into Antares.dll at compile time. A gamemd byte-patch
+//  cannot reach them, so on a >512 grid Antares indexes Items[Y*512+X]
+//  -> the every-other-row shroud scatter. We patch Antares.dll's own
+//  .text the same way: 73 `shl reg,9` GetCellIndex sites -> shl shift,
+//  and the paired MaxCells bounds (73x `cmp reg,0x3FFFF` + 2x
+//  `cmp ,0x40000`) -> stride*stride. Verified: every shl-9 sampled is
+//  `movsx <Y>; shl,9; add <X>` and pairs 1:1 with a 0x3FFFF bound.
+//  Patched relative to GetModuleHandle("Antares.dll") (relocated base).
+//  NO-OP at stride 512. Netcode-safe: identical on every client.
+// ============================================================
+int ApplyAntaresPatches(FILE* log)
+{
+    const int shift = Log2Exact(g_MapStride);
+    if (shift < 0 || shift == 9)
+    {
+        if (log) fprintf(log, "[antares] cell code stays x512 (stride %d)  [no-op]\n", g_MapStride);
+        return 0;
+    }
+    HMODULE h = GetModuleHandleA("Antares.dll");
+    if (!h)
+    {
+        if (log) fprintf(log, "[antares] Antares.dll not loaded -> skip\n");
+        return 0;
+    }
+    const DWORD base  = reinterpret_cast<DWORD>(h);
+    const DWORD total = static_cast<DWORD>(g_MapTotal);   // stride*stride (0x100000 @1024)
+    int ns = 0, nc = 0;
+    for (int i = 0; i < kAntaresShl_n; ++i)
+        ns += PatchShiftC1(base + kAntaresShl[i], static_cast<BYTE>(shift));
+    for (int i = 0; i < kAntaresCmp_n; ++i)
+    {
+        const DWORD rva  = kAntaresCmp[i][0];
+        const DWORD off  = kAntaresCmp[i][1];
+        const DWORD oldv = kAntaresCmp[i][2];
+        // `idx < 0x40000` compiles as either `cmp ,0x40000` or the
+        // equivalent `cmp ,0x3FFFF` (idx <= 0x3FFFF). Preserve the form.
+        const DWORD newv = (oldv == 0x40000) ? total : (total - 1);
+        nc += PatchImm32(base + rva, off, oldv, newv);
+    }
+    if (log) fprintf(log, "[antares] Antares.dll @0x%X: shl %d/%d, cmp %d/%d (GetCellIndex+MaxCells)\n",
+                     base, ns, kAntaresShl_n, nc, kAntaresCmp_n);
+    return ns + nc;
+}
+
 int ApplyModulePatches(FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);

@@ -42,6 +42,12 @@ int ApplyCoordPatches(FILE* log);
 // their GetModuleHandle base) to match gamemd's stride. NO-OP at 512.
 int ApplyModulePatches(FILE* log);
 
+// Antares.dll has its OWN compiled-in stride 512 (YRpp GetCellIndex Y<<9 +
+// MaxCells 0x40000), inlined 73x. Patch its .text like gamemd so Antares-
+// reimplemented features (shroud reveal via MapRevealer, etc.) use stride 1024.
+// NO-OP at 512. Patched relative to GetModuleHandle("Antares.dll").
+int ApplyAntaresPatches(FILE* log);
+
 // Rewrites the static 8-neighbour cell-adjacency offset table @0x7E3774
 // ([-512,-511,1,513,512,511,-1,-513]) to the current stride (row*stride+col).
 // Fixes ore/gem spread and index-based neighbour walks. NO-OP at 512.
