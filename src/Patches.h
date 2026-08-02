@@ -48,6 +48,12 @@ int ApplyModulePatches(FILE* log);
 // NO-OP at 512. Patched relative to GetModuleHandle("Antares.dll").
 int ApplyAntaresPatches(FILE* log);
 
+// Phobos.dll also compiles stride 512 inline. The old kPhobosShl (48) was
+// INCOMPLETE for the current Phobos build (73 shl-9 sites) -> unpatched cell
+// lookups (e.g. Phobos voxel LightingFix) stayed at 512 = black voxels. This
+// patches the complete current-build set. NO-OP at 512.
+int ApplyPhobosPatches(FILE* log);
+
 // Rewrites the static 8-neighbour cell-adjacency offset table @0x7E3774
 // ([-512,-511,1,513,512,511,-1,-513]) to the current stride (row*stride+col).
 // Fixes ore/gem spread and index-based neighbour walks. NO-OP at 512.

@@ -466,38 +466,66 @@ static int PatchImm32(DWORD va, int off, DWORD expect, DWORD nv)
 //  Patched relative to GetModuleHandle("Antares.dll") (relocated base).
 //  NO-OP at stride 512. Netcode-safe: identical on every client.
 // ============================================================
-int ApplyAntaresPatches(FILE* log)
+// Shared cell-index patcher for a YRpp-based DLL. Each such DLL compiles
+// YRpp's GetCellIndex ((Y<<9)+X) and MaxCells (0x40000) INLINE, so a gamemd
+// byte-patch cannot reach them. We patch the DLL's own .text (relocated base):
+//   shl[]  : `shl reg,9`  GetCellIndex sites            -> shl shift
+//   cmp[]  : MaxCells bounds {rva, imm-off, 0x40000|0x3FFFF} -> total | total-1
+//   andm[] : `and reg,0x1FF` inverse-conv X {rva, imm-off} -> stride-1 mask
+//   sar[]  : `sar reg,9`  inverse-conv Y sites           -> sar shift
+// NO-OP at 512. Netcode-safe (identical on every client).
+static int ApplyDllStridePatches(const char* name,
+    const DWORD* shl, int nshl,
+    const DWORD (*cmp)[3], int ncmp,
+    const DWORD (*andm)[2], int nand,
+    const DWORD* sar, int nsar,
+    FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);
     if (shift < 0 || shift == 9)
     {
-        if (log) fprintf(log, "[antares] cell code stays x512 (stride %d)  [no-op]\n", g_MapStride);
+        if (log) fprintf(log, "[dll] %-12s cell code stays x512 (stride %d)  [no-op]\n", name, g_MapStride);
         return 0;
     }
-    HMODULE h = GetModuleHandleA("Antares.dll");
+    HMODULE h = GetModuleHandleA(name);
     if (!h)
     {
-        if (log) fprintf(log, "[antares] Antares.dll not loaded -> skip\n");
+        if (log) fprintf(log, "[dll] %-12s not loaded -> skip\n", name);
         return 0;
     }
     const DWORD base  = reinterpret_cast<DWORD>(h);
     const DWORD total = static_cast<DWORD>(g_MapTotal);   // stride*stride (0x100000 @1024)
-    int ns = 0, nc = 0;
-    for (int i = 0; i < kAntaresShl_n; ++i)
-        ns += PatchShiftC1(base + kAntaresShl[i], static_cast<BYTE>(shift));
-    for (int i = 0; i < kAntaresCmp_n; ++i)
+    const DWORD mask  = static_cast<DWORD>(g_MapStride) - 1;
+    int ns = 0, nc = 0, na = 0, nr = 0;
+    for (int i = 0; i < nshl; ++i)
+        ns += PatchShiftC1(base + shl[i], static_cast<BYTE>(shift));
+    for (int i = 0; i < ncmp; ++i)
     {
-        const DWORD rva  = kAntaresCmp[i][0];
-        const DWORD off  = kAntaresCmp[i][1];
-        const DWORD oldv = kAntaresCmp[i][2];
-        // `idx < 0x40000` compiles as either `cmp ,0x40000` or the
-        // equivalent `cmp ,0x3FFFF` (idx <= 0x3FFFF). Preserve the form.
+        const DWORD oldv = cmp[i][2];                    // 0x40000 or 0x3FFFF
         const DWORD newv = (oldv == 0x40000) ? total : (total - 1);
-        nc += PatchImm32(base + rva, off, oldv, newv);
+        nc += PatchImm32(base + cmp[i][0], cmp[i][1], oldv, newv);
     }
-    if (log) fprintf(log, "[antares] Antares.dll @0x%X: shl %d/%d, cmp %d/%d (GetCellIndex+MaxCells)\n",
-                     base, ns, kAntaresShl_n, nc, kAntaresCmp_n);
-    return ns + nc;
+    for (int i = 0; i < nand; ++i)
+        na += PatchImm32(base + andm[i][0], andm[i][1], 0x1FF, mask);
+    for (int i = 0; i < nsar; ++i)
+        nr += PatchShiftC1(base + sar[i], static_cast<BYTE>(shift));
+    if (log) fprintf(log, "[dll] %-12s @0x%X: shl %d/%d, cmp %d/%d, and %d/%d, sar %d/%d\n",
+                     name, base, ns, nshl, nc, ncmp, na, nand, nr, nsar);
+    return ns + nc + na + nr;
+}
+
+int ApplyAntaresPatches(FILE* log)
+{
+    return ApplyDllStridePatches("Antares.dll",
+        kAntaresShl, kAntaresShl_n, kAntaresCmp, kAntaresCmp_n,
+        nullptr, 0, nullptr, 0, log);
+}
+
+int ApplyPhobosPatches(FILE* log)
+{
+    return ApplyDllStridePatches("Phobos.dll",
+        kPhobosShl2, kPhobosShl2_n, kPhobosCmp2, kPhobosCmp2_n,
+        kPhobosAnd1ff2, kPhobosAnd1ff2_n, kPhobosSar2, kPhobosSar2_n, log);
 }
 
 int ApplyModulePatches(FILE* log)
@@ -519,15 +547,15 @@ int ApplyModulePatches(FILE* log)
         const DWORD* andm; int nand;
         const DWORD* sar;  int nsar;
     };
+    // Phobos moved to ApplyPhobosPatches (complete, current-build list).
+    // Ares.dll is not loaded under Antares, but kept here for completeness.
     const Mod mods[] = {
         { "Ares.dll",   kAresShl,   kAresShl_n,   kAresCmp40,   kAresCmp40_n,
                         0, 0, 0, 0 },
-        { "Phobos.dll", kPhobosShl, kPhobosShl_n, kPhobosCmp40, kPhobosCmp40_n,
-                        kPhobosAnd1ff, kPhobosAnd1ff_n, kPhobosSar9, kPhobosSar9_n },
     };
 
     int grand = 0;
-    for (int m = 0; m < 2; ++m)
+    for (int m = 0; m < 1; ++m)
     {
         const Mod& M = mods[m];
         HMODULE h = GetModuleHandleA(M.name);

@@ -70,6 +70,7 @@ static void ApplyInit()
         if (cfg.PatchBounds)  ApplyBoundsPatches(f, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0); else fprintf(f, "[bounds]  DISABLED via INI\n");
         if (cfg.PatchModules) ApplyModulePatches(f);  else fprintf(f, "[dll]     DISABLED via INI\n");
         if (cfg.PatchModules) ApplyAntaresPatches(f); else fprintf(f, "[antares] DISABLED via INI\n");
+        if (cfg.PatchModules) ApplyPhobosPatches(f);  else fprintf(f, "[phobos]  DISABLED via INI\n");
         if (cfg.PatchCoord)   ApplyCoordPatches(f);   else fprintf(f, "[coord]   DISABLED via INI\n");
         if (cfg.PatchGuard)   ApplyGuardPatches(f);   else fprintf(f, "[guard]   DISABLED via INI\n");
         if (cfg.PatchAdjacency) ApplyAdjacencyPatch(f); else fprintf(f, "[adj]     DISABLED via INI\n");
@@ -83,6 +84,7 @@ static void ApplyInit()
         if (cfg.PatchBounds)  ApplyBoundsPatches(nullptr, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0);
         if (cfg.PatchModules) ApplyModulePatches(nullptr);
         if (cfg.PatchModules) ApplyAntaresPatches(nullptr);
+        if (cfg.PatchModules) ApplyPhobosPatches(nullptr);
         if (cfg.PatchCoord)   ApplyCoordPatches(nullptr);
         if (cfg.PatchGuard)   ApplyGuardPatches(nullptr);
         if (cfg.PatchAdjacency) ApplyAdjacencyPatch(nullptr);
