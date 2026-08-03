@@ -11,7 +11,12 @@
 //  These are grouped so a site can be commented out during
 //  in-game crash-hunting without disturbing the others.
 // ============================================================
-// Cell-grid stride sites (shl reg,0x9 -> *stride). 435 CellClass* (*4) sites + 41 shroud (*1) sites = 476; radar/isometric/bitfield excluded. NO-OP at 512.
+// Cell-grid stride sites (shl reg,0x9 -> *stride). 435 CellClass* (*4) sites + 40 shroud (*1) sites = 475; radar/isometric/bitfield excluded. NO-OP at 512.
+// EXCLUDED false-positive: 0x547DC7 is inside IsometricTileTypeClass::ReadFromFile.
+//   Its `shl eax,9` is a LIGHTING-REMAP table stride (value clamped to [0,254] * 512
+//   bytes-per-row) feeding ds:0xAA10D0, NOT a cell index. Patching it doubled the row
+//   stride -> wrong palette (ore black / shroud blue-green) + OOB crash at 0x548DB1 on
+//   any Level>0 (elevated/cliff) tile. Flat Level-0 maps (0*512==0*1024) were unaffected.
 static const DWORD kCellStrideSites[] =
 {
     0x429AB1, 0x429AC2, 0x429DFA, 0x483B32, 0x493CF1, 0x493E22, 0x493F66, 0x4940B1,
@@ -19,7 +24,7 @@ static const DWORD kCellStrideSites[] =
     0x495429, 0x4955CA, 0x495769, 0x49590B, 0x495A81, 0x495BF9, 0x495D99, 0x495F39,
     0x497906, 0x497A5B, 0x497BC7, 0x497D30, 0x497EA7, 0x498021, 0x4981A1, 0x498338,
     0x498521, 0x49871E, 0x498911, 0x498B11, 0x498D1E, 0x498F21, 0x499129, 0x4992C9,
-    0x499491, 0x49969C, 0x4998B1, 0x499ADC, 0x4F88D6, 0x547DC7, 0x5656EA, 0x565757,
+    0x499491, 0x49969C, 0x4998B1, 0x499ADC, 0x4F88D6, /* 0x547DC7 excluded */ 0x5656EA, 0x565757,
     0x5657AC, 0x5657F1, 0x566542, 0x566B83, 0x567704, 0x567775, 0x567C1E, 0x567C8C,
     0x567ED4, 0x568059, 0x568220, 0x568620, 0x5686EC, 0x568783, 0x568A52, 0x568D11,
     0x568D8B, 0x568E69, 0x568F1A, 0x569015, 0x56906B, 0x5690C1, 0x569238, 0x56928E,
