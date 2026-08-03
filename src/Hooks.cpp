@@ -536,7 +536,7 @@ DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 5)
         R->EAX(0);
         return 0x66053A;   // a bare `ret` (c3) -> clean return to caller
     }
-    return 0;              // singleton non-null (never happens) -> run original
+    return 0;              // singleton non-null -> run original
 }
 
 // ============================================================
@@ -610,17 +610,32 @@ DEFINE_HOOK(578290, CellIterator_OOBGuard, 6)
     const DWORD map   = R->ECX();
     const DWORD items = *reinterpret_cast<DWORD*>(map + 0x13C);   // Cells.Items
     const DWORD cur   = *reinterpret_cast<DWORD*>(map + 0x118);   // current slot ptr
-    if (g_MapStride > 512 && items &&
-        (cur < items || cur >= items + static_cast<DWORD>(g_MapTotal) * 4))
+    if (g_MapStride > 512 && items)
     {
-        if (g_IterGuardFires < 25)
+        bool stop = (cur < items || cur >= items + static_cast<DWORD>(g_MapTotal) * 4); // slot OOB
+        DWORD cell = 0;
+        if (!stop)
         {
-            ++g_IterGuardFires;
-            DeployDiagLog("ITER-OOB guard #%d: slot=0x%X items=0x%X end=0x%X -> return null\n",
-                          g_IterGuardFires, cur, items, items + static_cast<DWORD>(g_MapTotal) * 4);
+            cell = *reinterpret_cast<DWORD*>(cur);   // cell ptr in this slot (slot is in-bounds)
+            // The population loop fills only the iso-diamond of valid cells; the array
+            // corners outside it are never written and hold GARBAGE (low data-segment
+            // addresses like ~0x8809xx). Walking one makes UpdatePassability write
+            // through it and corrupt globals (observed: 0x880A04 -> AV in coord code).
+            // Valid cells are heap objects in [0x10000000, 0x40000000); a non-null cell
+            // ptr outside that window is the end of valid cells -> stop the walk here.
+            if (cell != 0 && (cell < 0x10000000 || cell >= 0x40000000)) stop = true;
         }
-        R->EAX(0);           // null cell -> caller's iteration loop stops
-        return 0x5782D4;     // bare `ret`
+        if (stop)
+        {
+            if (g_IterGuardFires < 25)
+            {
+                ++g_IterGuardFires;
+                DeployDiagLog("ITER guard #%d: slot=0x%X cell=0x%X items=0x%X -> stop\n",
+                              g_IterGuardFires, cur, cell, items);
+            }
+            R->EAX(0);           // null cell -> caller's iteration loop stops
+            return 0x5782D4;     // bare `ret`
+        }
     }
     R->EAX(*reinterpret_cast<DWORD*>(map + 0x114));   // replicate mov eax,[ecx+0x114]
     return 0x578296;
