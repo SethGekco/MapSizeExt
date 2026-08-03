@@ -353,8 +353,12 @@ static void DeployDiagLog(const char* fmt, ...)
 // cell is wrongly seen as occupied/impassable.
 DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
 {
+    // Fire LATER (not the first deploy check at game start, before the camera
+    // has drawn the MCV area) so the tactical draw has run over the MCV. Fires
+    // once, ~the 900th deploy check (a while into play / after panning).
+    static int calls = 0;
     static bool gridDone = false;
-    if (g_MapStride > 512 && !gridDone)
+    if (g_MapStride > 512 && !gridDone && ++calls >= 900)
     {
         gridDone = true;
         // MCV cell from its stored Location (leptons @ +0x9C).
@@ -397,15 +401,19 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
                     (int)*reinterpret_cast<signed char*>(mcell + 0x11B));
         }
 
-        const int N = 160;   // covers the full 128-ish coord range with margin
-        DeployDiagLog("=== per-cell LightConvert grid, MCV at cell (%d,%d), stride %d ===\n",
+        // Grid CENTERED on the MCV (works for any map size). 141x141 window.
+        // If the L (lit) region is centered on '@', per-cell lighting follows the
+        // view/units correctly (and the earlier "offset" was just the game-start
+        // camera). If the L region sits OFFSET from '@', it's a real bug.
+        const int R = 70;
+        DeployDiagLog("=== per-cell LightConvert grid CENTERED on MCV (%d,%d), stride %d ===\n",
                       cx, cy, g_MapStride);
-        DeployDiagLog("legend: @=mcv  L=has LightConvert  X=LightConvert NULL  (space)=null cell\n");
-        for (int gy = 0; gy < N; ++gy)
+        DeployDiagLog("legend: @=mcv  L=has LightConvert  X=null convert(black)  (space)=null cell  cols %d..%d\n",
+                      cx - R, cx + R);
+        for (int gy = cy - R; gy <= cy + R; ++gy)
         {
-            char line[N + 4]; int n = 0;
-            bool any = false;
-            for (int gx = 0; gx < N; ++gx)
+            char line[2 * R + 4]; int n = 0;
+            for (int gx = cx - R; gx <= cx + R; ++gx)
             {
                 char ch;
                 int idx = gy * g_MapStride + gx;
@@ -415,17 +423,14 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
                 else
                 {
                     DWORD lc = *reinterpret_cast<DWORD*>(cell + 0x34);   // LightConvert
-                    if (gx == cx && gy == cy) { ch = '@'; any = true; }
-                    else if (lc == 0) { ch = 'X'; any = true; }         // null convert -> black objects
+                    if (gx == cx && gy == cy) ch = '@';
+                    else if (lc == 0) ch = 'X';                          // null convert -> black objects
                     else ch = 'L';
                 }
                 line[n++] = ch;
             }
             line[n] = '\0';
-            // Only log rows that contain a null-LightConvert cell (X) or the MCV (@),
-            // i.e. the cells whose objects would render black. All-'L' rows are fine
-            // and skipped. If NOTHING logs, per-cell LightConvert is NOT the cause.
-            if (any) DeployDiagLog("y%03d|%s\n", gy, line);
+            DeployDiagLog("y%03d|%s\n", gy, line);
         }
     }
     R->ECX(0x87F7E8);   // replicate mov ecx,0x87f7e8
