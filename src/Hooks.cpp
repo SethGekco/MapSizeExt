@@ -549,6 +549,17 @@ DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 5)
 //  the pathfinder is even asked with a sane start/target. Reuses DeployDiagLog
 //  (capped). NO-OP at 512.
 // ============================================================
+// Resolve a cell's Level (height) from map coords. -9x = not resolvable.
+static int CellLevelAt(int x, int y)
+{
+    DWORD items = *reinterpret_cast<DWORD*>(0x87F924);   // MapClass Cells.Items
+    if (!items) return -99;
+    int idx = y * g_MapStride + x;
+    if (idx < 0 || idx >= g_MapTotal) return -98;
+    DWORD c = *reinterpret_cast<DWORD*>(items + idx * 4);
+    return c ? (int)*reinterpret_cast<signed char*>(c + 0x11B) : -97;
+}
+
 DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 {
     if (g_MapStride > 512)
@@ -556,13 +567,16 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
         DWORD esp = R->ESP();
         int sx = *reinterpret_cast<short*>(esp + 0x4);
         int sy = *reinterpret_cast<short*>(esp + 0x6);
-        int tx = *reinterpret_cast<short*>(esp + 0x8);
-        int ty = *reinterpret_cast<short*>(esp + 0xA);
-        int a3 = *reinterpret_cast<int*>(esp + 0xC);
-        int dist = (sx > tx ? sx - tx : tx - sx) + (sy > ty ? sy - ty : ty - sy);
-        if (dist > 15)
-            DeployDiagLog("PATH this=0x%X  start(%d,%d) -> target(%d,%d)  dist=%d a3=%d\n",
-                          R->ECX(), sx, sy, tx, ty, dist, a3);
+        // Ramp/slope diagnostic: log the start cell's Level and its 8 neighbours'
+        // Levels. A unit that can't climb a ramp re-paths in place -> the SAME
+        // (sx,sy) repeats, and a neighbour at a HIGHER Level is the step it can't
+        // cross. Compact so a stuck unit is obvious in the log.
+        int L  = CellLevelAt(sx, sy);
+        int nw = CellLevelAt(sx-1, sy-1), n = CellLevelAt(sx, sy-1), ne = CellLevelAt(sx+1, sy-1);
+        int w  = CellLevelAt(sx-1, sy),                             e  = CellLevelAt(sx+1, sy);
+        int sw = CellLevelAt(sx-1, sy+1), s = CellLevelAt(sx, sy+1), se = CellLevelAt(sx+1, sy+1);
+        DeployDiagLog("PATH this=0x%X start(%d,%d) L=%d  nbr[nw%d n%d ne%d w%d e%d sw%d s%d se%d]\n",
+                      R->ECX(), sx, sy, L, nw, n, ne, w, e, sw, s, se);
     }
     R->EAX(0x1F9C);          // replicate mov eax,0x1f9c
     return 0x4D3925;
