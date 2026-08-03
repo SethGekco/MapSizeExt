@@ -538,3 +538,32 @@ DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 5)
     }
     return 0;              // singleton non-null (never happens) -> run original
 }
+
+// ============================================================
+//  PATHFINDING DIAGNOSTIC  (stride > 512)
+//  FootClass::UpdatePathfinding @ 0x4D3920 solves a unit's path.
+//    b8 9c 1f 00 00   mov eax,0x1f9c   (A* stack-buffer size; 5 stolen bytes)
+//  thiscall: ECX = FootClass*; stack args (ret 0xC): [esp+4]=CellStruct start,
+//  [esp+8]=CellStruct target, [esp+0xC]=int. Log LONG requests (Manhattan dist
+//  > 15) -- the "far" moves the user reports failing -- so we can see whether
+//  the pathfinder is even asked with a sane start/target. Reuses DeployDiagLog
+//  (capped). NO-OP at 512.
+// ============================================================
+DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
+{
+    if (g_MapStride > 512)
+    {
+        DWORD esp = R->ESP();
+        int sx = *reinterpret_cast<short*>(esp + 0x4);
+        int sy = *reinterpret_cast<short*>(esp + 0x6);
+        int tx = *reinterpret_cast<short*>(esp + 0x8);
+        int ty = *reinterpret_cast<short*>(esp + 0xA);
+        int a3 = *reinterpret_cast<int*>(esp + 0xC);
+        int dist = (sx > tx ? sx - tx : tx - sx) + (sy > ty ? sy - ty : ty - sy);
+        if (dist > 15)
+            DeployDiagLog("PATH this=0x%X  start(%d,%d) -> target(%d,%d)  dist=%d a3=%d\n",
+                          R->ECX(), sx, sy, tx, ty, dist, a3);
+    }
+    R->EAX(0x1F9C);          // replicate mov eax,0x1f9c
+    return 0x4D3925;
+}
