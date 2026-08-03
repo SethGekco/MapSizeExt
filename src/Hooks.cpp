@@ -601,6 +601,36 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 }
 
 // ------------------------------------------------------------------
+//  WALL-CONNECT DIAGNOSTIC (stride>512). CellClass::AttachesToNeighbourOverlay
+//  @0x480510 is called per wall neighbour: this=ECX=neighbour cell, [esp+4]=the
+//  placing cell's OverlayTypeIndex. Walls render connected by frame bits set when
+//  a neighbour holds a matching wall overlay. Log the neighbour cell, its coords,
+//  its OverlayTypeIndex(+0x44), and the source overlay type -- so we can see if
+//  the neighbour is the null-cell DUMMY (0xABDC50) or has the wrong overlay.
+DEFINE_HOOK(480510, WallAttach_Diag, 5)
+{
+    static int fires = 0;
+    if (g_MapStride > 512 && fires < 60)
+    {
+        DWORD ncell = R->ECX();
+        DWORD esp   = R->ESP();
+        int srcOvl  = *reinterpret_cast<int*>(esp + 4);
+        int nX = -1, nY = -1, nOvl = -99;
+        if (ncell)
+        {
+            nX   = *reinterpret_cast<short*>(ncell + 0x24);
+            nY   = *reinterpret_cast<short*>(ncell + 0x26);
+            nOvl = *reinterpret_cast<int*>(ncell + 0x44);
+        }
+        ++fires;
+        DeployDiagLog("WALLATTACH #%d neighbour=0x%X (%d,%d) nOverlay=%d  srcOverlay=%d%s\n",
+                      fires, ncell, nX, nY, nOvl, srcOvl,
+                      ncell == 0xABDC50 ? "  [DUMMY]" : "");
+    }
+    return 0;   // continue original
+}
+
+// ------------------------------------------------------------------
 //  Safety net for the full-map cell iterator @0x578290 (the passability/
 //  movement-zone walk fixed by ApplyIteratorStridePatches). The walk terminates
 //  by hitting NULL border cells; if the stride-adjusted geometry ever fails to
