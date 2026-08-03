@@ -489,6 +489,65 @@ int ApplyOccupancyBoundPatches(FILE* log)
 }
 
 // ============================================================
+//  Full-map cell-iterator stride  (the "walk on water / units can't path" bug)
+//  MapClass's bounded cell iterator @0x578290 (its per-cell op is
+//  CellClass::UpdatePassability @0x486A70/0x486BF0) walks the whole map with
+//  stride 512 baked into BYTE-OFFSET arithmetic that the shl-9 (index) audit
+//  could not see:
+//    * 32 setup sites compute the iteration END bound as
+//        [Map+0x118] = Cells.Items + (rows << 0xB) + 4
+//      where rows<<0xB = rows * 512 * 4 bytes. At stride 1024 that must be <<0xC.
+//    * the iterator's own diagonal step is `lea eax,[ebp-0x7FC]`
+//      (-0x7FC = -(512-1)*4 bytes = one iso-diagonal cell). At stride 1024 it
+//      must be -(1024-1)*4 = -0xFFC.
+//  Left at 512, the full-map passability/movement-zone recompute scans the wrong
+//  cell range, so most cells never get a valid zone: land units re-path in place
+//  (can't reach their target), water is not marked impassable (units walk on it),
+//  ramps/harvesters misbehave. Localized building-placement rezones still work,
+//  which is why a unit could only move on a sold factory's former FOUNDATION.
+//  The iterator's index recompute (shl 9 @0x578321) is already covered by the
+//  main stride list. NO-OP at stride 512.
+static const DWORD kIterBoundSites[] = {
+    0x565D3D, 0x56648E, 0x566ADC, 0x567026, 0x568C1E, 0x568C75, 0x56D71C, 0x577B24,
+    0x577C16, 0x577D05, 0x577E48, 0x577FD1, 0x57812E, 0x5781CA, 0x578375, 0x578F13,
+    0x578F6F, 0x57A169, 0x57A1CE, 0x57A227, 0x57A284, 0x5855D0, 0x585770, 0x5857CB,
+    0x58582D, 0x585886, 0x585DB5, 0x585E20, 0x5866E8, 0x586748, 0x587C9B, 0x588AEF,
+};
+int ApplyIteratorStridePatches(FILE* log)
+{
+    if (g_MapStride == 512)
+    {
+        if (log) fprintf(log, "[iter] cell-iterator stride stays 512  [no-op]\n");
+        return 0;
+    }
+    int shiftBits = 0;
+    for (int s = static_cast<int>(g_MapStride); s > 1; s >>= 1) ++shiftBits;
+    const BYTE  newShift = static_cast<BYTE>(shiftBits + 2);              // 0xB -> 0xC @1024
+    const DWORD newDisp  = static_cast<DWORD>(-((static_cast<int>(g_MapStride) - 1) * 4)); // -0x7FC -> -0xFFC
+
+    int nb = 0;
+    for (size_t i = 0; i < sizeof(kIterBoundSites) / sizeof(DWORD); ++i)
+    {
+        const DWORD va = kIterBoundSites[i];
+        if (*reinterpret_cast<BYTE*>(va)       != 0xC1 ||          // shl reg,imm8
+            (*reinterpret_cast<BYTE*>(va + 1) & 0xF8) != 0xE0 ||   // ModRM /4 (shl)
+            *reinterpret_cast<BYTE*>(va + 2)   != 0x0B)            // imm8 == 0xB
+            continue;
+        DWORD old = 0; void* p = reinterpret_cast<void*>(va + 2);
+        if (!VirtualProtect(p, 1, PAGE_EXECUTE_READWRITE, &old)) continue;
+        *reinterpret_cast<BYTE*>(va + 2) = newShift;
+        VirtualProtect(p, 1, old, &old);
+        ++nb;
+    }
+    // Iterator diagonal step @0x5782BD: lea eax,[ebp-0x7FC]  (8D 85 04 F8 FF FF)
+    const int ns = PatchImm32(0x5782BD, 2, 0xFFFFF804, newDisp);
+
+    if (log) fprintf(log, "[iter] cell-iterator stride 512->%d : bound shl 0xB->0x%X %d/32, step -0x7FC->-0x%X %d/1\n",
+                     (int)g_MapStride, newShift, nb, (unsigned)(-(int)newDisp), ns);
+    return nb + ns;
+}
+
+// ============================================================
 //  Antares.dll cell-index patch.
 //  Antares REIMPLEMENTS large parts of the engine (e.g. the shroud
 //  reveal via its MapRevealer class) and looks up cells with YRpp's

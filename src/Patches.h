@@ -40,6 +40,11 @@ int ApplyBoundsPatches(FILE* log, bool patchCmp, bool patchRootWH);
 // toward the bottom of big maps. NO-OP at 512.
 int ApplyOccupancyBoundPatches(FILE* log);
 
+// Full-map cell-iterator stride: 32 `shl reg,0xB` byte-offset bounds -> 0xC and
+// the iterator's `lea [ebp-0x7FC]` diagonal step -> -0xFFC. Fixes the broken
+// full-map passability/movement-zone recompute (walk-on-water, can't-path). 512-safe.
+int ApplyIteratorStridePatches(FILE* log);
+
 // Fixes the inverse index->(X,Y) conversions (and 0x1FF / sar 9) so
 // coordinates >=512 don't wrap to the top-left. NO-OP at stride 512.
 int ApplyCoordPatches(FILE* log);

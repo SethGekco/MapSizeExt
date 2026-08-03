@@ -35,6 +35,7 @@ struct MapSizeConfig
     int PatchCoord;       // gamemd inverse index->(X,Y) conversion
     int PatchGuard;       // force safe render path @0x657CF0 (avoid null 0x880A04)
     int PatchAdjacency;   // 8-neighbour cell-offset table @0x7E3774 (ore spread etc.)
+    int PatchIterator;    // full-map cell-iterator byte-stride (walk-on-water/pathing fix)
     int PatchIso;         // EXPERIMENTAL tactical-render iso cell sites (default 0)
 
     int Total() const { return Stride * Stride; }
@@ -68,6 +69,7 @@ inline MapSizeConfig ReadConfig()
     cfg.PatchCoord     = GetPrivateProfileIntA("Debug", "PatchCoord",     1, iniPath);
     cfg.PatchGuard     = GetPrivateProfileIntA("Debug", "PatchGuard",     1, iniPath);
     cfg.PatchAdjacency = GetPrivateProfileIntA("Debug", "PatchAdjacency", 1, iniPath);
+    cfg.PatchIterator  = GetPrivateProfileIntA("Debug", "PatchIterator",  1, iniPath);
     cfg.PatchIso       = GetPrivateProfileIntA("Debug", "PatchIso",       0, iniPath);
 
     // Clamp: never go below the vanilla values.
