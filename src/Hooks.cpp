@@ -95,6 +95,55 @@ static void DumpMapStateOnce()
     fclose(f);
 }
 
+// Read the cells the tactical view is CURRENTLY drawing (TacticalClass::Instance
+// @ *0x887324; VisibleCellCount @ +0xE0; VisibleCells[800] @ +0xE4) and check
+// each one's LightConvert (cell+0x34). If the on-screen cells have null convert,
+// objects on them render black -- proven, with no camera/timing confound. Fires
+// once, a bit into gameplay (so the view is populated). Writes MapSizeExt_light.log.
+static void DumpVisibleCellsLighting()
+{
+    static long long calls = 0;
+    static bool done = false;
+    if (done || g_MapStride <= 512) return;
+    if (++calls < 200000LL) return;                 // let the game run a little
+    DWORD tac = *reinterpret_cast<DWORD*>(0x00887324);   // TacticalClass::Instance
+    if (!tac) return;
+    int vcount = *reinterpret_cast<int*>(tac + 0xE0);    // VisibleCellCount
+    if (vcount <= 0) return;                         // nothing drawn yet -> wait
+    done = true;
+
+    char path[MAX_PATH];
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    char* slash = strrchr(path, '\\');
+    if (slash) *(slash + 1) = '\0';
+    strcat_s(path, "MapSizeExt_light.log");
+    FILE* f = nullptr; fopen_s(&f, path, "w");
+    if (!f) return;
+
+    DWORD* vcells = reinterpret_cast<DWORD*>(tac + 0xE4);
+    int nullLC = 0, setLC = 0, minx = 1 << 30, maxx = -(1 << 30), miny = 1 << 30, maxy = -(1 << 30);
+    fprintf(f, "TacticalClass=0x%X  VisibleCellCount=%d  stride=%d\n\n", tac, vcount, g_MapStride);
+    int cap = vcount > 800 ? 800 : vcount;
+    for (int i = 0; i < cap; ++i)
+    {
+        DWORD cell = vcells[i];
+        if (!cell) continue;
+        DWORD lc = *reinterpret_cast<DWORD*>(cell + 0x34);
+        int x = *reinterpret_cast<short*>(cell + 0x24);
+        int y = *reinterpret_cast<short*>(cell + 0x26);
+        if (lc == 0) ++nullLC; else ++setLC;
+        if (x < minx) minx = x; if (x > maxx) maxx = x;
+        if (y < miny) miny = y; if (y > maxy) maxy = y;
+        if (i < 40)
+            fprintf(f, "  vis[%2d] cell(%d,%d)  LightConvert=0x%X  Level=%d\n",
+                    i, x, y, lc, (int)*reinterpret_cast<signed char*>(cell + 0x11B));
+    }
+    fprintf(f, "\nSUMMARY: %d visible cells, %d have NULL LightConvert (black), %d set.\n",
+            vcount, nullLC, setLC);
+    fprintf(f, "Visible-cell coord range: X[%d..%d] Y[%d..%d]\n", minx, maxx, miny, maxy);
+    fclose(f);
+}
+
 DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 {
     int y = R->EAX<int>();
@@ -103,6 +152,7 @@ DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
     R->EAX(index);
 
     DumpMapStateOnce();           // MapClass::Instance dimension dump (diagnostic, once)
+    DumpVisibleCellsLighting();   // TacticalClass VisibleCells LightConvert probe (once, late)
 
     if (index < 0)             return 0x565709;  // js  (negative)
     if (index >= g_MapTotal)   return 0x565709;  // cmp/jge (out of bounds)
