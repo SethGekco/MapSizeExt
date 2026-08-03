@@ -549,16 +549,17 @@ DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 5)
 //  the pathfinder is even asked with a sane start/target. Reuses DeployDiagLog
 //  (capped). NO-OP at 512.
 // ============================================================
-// Resolve a cell's Level (height) from map coords. -9x = not resolvable.
-static int CellLevelAt(int x, int y)
+// Resolve a cell pointer from map coords (0 if null/out-of-range).
+static DWORD CellAt(int x, int y)
 {
     DWORD items = *reinterpret_cast<DWORD*>(0x87F924);   // MapClass Cells.Items
-    if (!items) return -99;
+    if (!items) return 0;
     int idx = y * g_MapStride + x;
-    if (idx < 0 || idx >= g_MapTotal) return -98;
-    DWORD c = *reinterpret_cast<DWORD*>(items + idx * 4);
-    return c ? (int)*reinterpret_cast<signed char*>(c + 0x11B) : -97;
+    if (idx < 0 || idx >= g_MapTotal) return 0;
+    return *reinterpret_cast<DWORD*>(items + idx * 4);
 }
+// LandType (+0xEC): 0=Clear 1=Road 2=Water 3=Rock 4=Wall 5=Tiberium 6=Beach 7=Rough 8=Cliff. -1 = null cell.
+static int LandTypeAt(int x, int y) { DWORD c = CellAt(x, y); return c ? *reinterpret_cast<int*>(c + 0xEC) : -1; }
 
 DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 {
@@ -567,16 +568,23 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
         DWORD esp = R->ESP();
         int sx = *reinterpret_cast<short*>(esp + 0x4);
         int sy = *reinterpret_cast<short*>(esp + 0x6);
-        // Ramp/slope diagnostic: log the start cell's Level and its 8 neighbours'
-        // Levels. A unit that can't climb a ramp re-paths in place -> the SAME
-        // (sx,sy) repeats, and a neighbour at a HIGHER Level is the step it can't
-        // cross. Compact so a stuck unit is obvious in the log.
-        int L  = CellLevelAt(sx, sy);
-        int nw = CellLevelAt(sx-1, sy-1), n = CellLevelAt(sx, sy-1), ne = CellLevelAt(sx+1, sy-1);
-        int w  = CellLevelAt(sx-1, sy),                             e  = CellLevelAt(sx+1, sy);
-        int sw = CellLevelAt(sx-1, sy+1), s = CellLevelAt(sx, sy+1), se = CellLevelAt(sx+1, sy+1);
-        DeployDiagLog("PATH this=0x%X start(%d,%d) L=%d  nbr[nw%d n%d ne%d w%d e%d sw%d s%d se%d]\n",
-                      R->ECX(), sx, sy, L, nw, n, ne, w, e, sw, s, se);
+        // Passability diagnostic. For the unit's start cell log: Level (height),
+        // LandType (drives passability: 2=Water should be impassable to land units),
+        // SlopeIndex (ramp shape), IsoTileTypeIndex (visual tile). Then the 8
+        // neighbours' LandTypes so a land/water boundary is visible.
+        // "Walk on water" => a unit standing on visual water shows LT != 2 (LandType
+        // mis-assigned) OR LT==2 but pathing proceeds anyway (zone/pathfinder bug).
+        // Stuck-on-ramp => same (sx,sy) repeats with a higher-Level neighbour.
+        DWORD c = CellAt(sx, sy);
+        int L   = c ? (int)*reinterpret_cast<signed char*>(c + 0x11B) : -99;
+        int LT  = c ? *reinterpret_cast<int*>(c + 0xEC) : -99;
+        int sl  = c ? (int)*reinterpret_cast<unsigned char*>(c + 0x11C) : -99;
+        int iso = c ? *reinterpret_cast<int*>(c + 0x38) : -99;
+        DeployDiagLog("PATH 0x%X start(%d,%d) L=%d LT=%d slope=%d iso=%d  nbrLT[%d %d %d %d %d %d %d %d]\n",
+                      R->ECX(), sx, sy, L, LT, sl, iso,
+                      LandTypeAt(sx-1,sy-1), LandTypeAt(sx,sy-1), LandTypeAt(sx+1,sy-1),
+                      LandTypeAt(sx-1,sy),                        LandTypeAt(sx+1,sy),
+                      LandTypeAt(sx-1,sy+1), LandTypeAt(sx,sy+1), LandTypeAt(sx+1,sy+1));
     }
     R->EAX(0x1F9C);          // replicate mov eax,0x1f9c
     return 0x4D3925;
