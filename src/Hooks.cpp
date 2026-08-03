@@ -376,10 +376,31 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
         //   ' ' occluded/never-seen (-2)   '.' fog   'V' visible(-1)
         //   '@' MCV cell                    '#' null cell   '!' coord-mismatch
         // Shroudedness @ cell+0x120 (char); MapCoords.X@+0x24, .Y@+0x26.
+        // ---- LIGHTING STATE PROBE ----
+        // (1) Global ambient: ScenarioClass::Instance ptr @ ds:0xA8B230; the
+        //     lighting inputs UpdateLighting reads live at [+0x354C..+0x3554]
+        //     (Ground/Red/Green/Blue-ish) and the computed set at [+0x3530..].
+        // (2) Per-cell LightConvert @ cell+0x34 and Level @ cell+0x11B.
+        DWORD scen = *reinterpret_cast<DWORD*>(0x00A8B230);
+        DeployDiagLog("LIGHT scenario=0x%X\n", scen);
+        if (scen)
+            for (DWORD off = 0x3528; off <= 0x3558; off += 4)
+                DeployDiagLog("  scen[+0x%X] = %d (0x%X)\n", off,
+                    *reinterpret_cast<int*>(scen + off), *reinterpret_cast<DWORD*>(scen + off));
+        // MCV cell's lighting
+        {
+            int midx = cy * g_MapStride + cx;
+            DWORD mcell = (items && midx >= 0 && midx < g_MapTotal) ? *reinterpret_cast<DWORD*>(items + midx * 4) : 0;
+            if (mcell)
+                DeployDiagLog("MCV cell (%d,%d): LightConvert@0x34=0x%X  Level@0x11B=%d\n",
+                    cx, cy, *reinterpret_cast<DWORD*>(mcell + 0x34),
+                    (int)*reinterpret_cast<signed char*>(mcell + 0x11B));
+        }
+
         const int N = 160;   // covers the full 128-ish coord range with margin
-        DeployDiagLog("=== WHOLE-MAP shroud grid, MCV at cell (%d,%d), stride %d ===\n",
+        DeployDiagLog("=== per-cell LightConvert grid, MCV at cell (%d,%d), stride %d ===\n",
                       cx, cy, g_MapStride);
-        DeployDiagLog("legend: @=mcv V=visible .=fog (space)=occluded #=null !=mismatch  cols 0..%d\n", N-1);
+        DeployDiagLog("legend: @=mcv  L=has LightConvert  X=LightConvert NULL  (space)=null cell\n");
         for (int gy = 0; gy < N; ++gy)
         {
             char line[N + 4]; int n = 0;
@@ -390,24 +411,20 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
                 int idx = gy * g_MapStride + gx;
                 DWORD cell = (items && idx >= 0 && idx < g_MapTotal)
                              ? *reinterpret_cast<DWORD*>(items + idx * 4) : 0;
-                if (!cell) ch = '#';
+                if (!cell) ch = ' ';
                 else
                 {
-                    int mcx = *reinterpret_cast<short*>(cell + 0x24);
-                    int mcy = *reinterpret_cast<short*>(cell + 0x26);
-                    char sh = *reinterpret_cast<char*>(cell + 0x120);
-                    if (gx == cx && gy == cy) ch = '@';
-                    else if (mcx != gx || mcy != gy) ch = '!';
-                    else if (sh == -1) { ch = 'V'; any = true; }
-                    else if (sh == -2) ch = ' ';
-                    else { ch = '.'; any = true; }
+                    DWORD lc = *reinterpret_cast<DWORD*>(cell + 0x34);   // LightConvert
+                    if (gx == cx && gy == cy) { ch = '@'; any = true; }
+                    else if (lc == 0) { ch = 'X'; any = true; }         // null convert -> black objects
+                    else ch = 'L';
                 }
-                if (ch != ' ' && ch != '#') any = true;
                 line[n++] = ch;
             }
             line[n] = '\0';
-            // Only log rows that have SOMETHING interesting (revealed / MCV / mismatch),
-            // to keep the log within the line cap; prefix the row number.
+            // Only log rows that contain a null-LightConvert cell (X) or the MCV (@),
+            // i.e. the cells whose objects would render black. All-'L' rows are fine
+            // and skipped. If NOTHING logs, per-cell LightConvert is NOT the cause.
             if (any) DeployDiagLog("y%03d|%s\n", gy, line);
         }
     }
