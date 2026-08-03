@@ -105,7 +105,7 @@ static void DumpVisibleCellsLighting()
     static long long calls = 0;
     static bool done = false;
     if (done || g_MapStride <= 512) return;
-    if (++calls < 200000LL) return;                 // let the game run a little
+    if (++calls < 3000LL) return;                   // let the game start drawing
     DWORD tac = *reinterpret_cast<DWORD*>(0x00887324);   // TacticalClass::Instance
     if (!tac) return;
     int vcount = *reinterpret_cast<int*>(tac + 0xE0);    // VisibleCellCount
@@ -208,6 +208,7 @@ DEFINE_HOOK(483B32, MapClass_InlineAccess_Stride, 6)
     R->EDI(R->EDI<int>() * g_MapStride);                    // shl edi,0x9
     *reinterpret_cast<int*>(R->ESI() + 0xFC) = R->EBX();    // mov [esi+0xfc],ebx
     DumpMapStateOnce();                                     // diagnostic (once)
+    DumpVisibleCellsLighting();                             // lighting probe (once)
     return 0x483B3B;                                        // mov eax,ds:0x87f924
 }
 
@@ -224,6 +225,7 @@ DEFINE_HOOK(565757, MapClass_LeptonOp_Stride, 5)
 {
     R->EDX(R->EDX<int>() * g_MapStride + R->ESI<int>());
     DumpMapStateOnce();  // diagnostic (once) - hot during pan/render
+    DumpVisibleCellsLighting();  // lighting probe (once)
     return 0x56575C;  // js 0x56577a
 }
 
