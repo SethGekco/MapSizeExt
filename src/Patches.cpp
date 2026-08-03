@@ -452,6 +452,36 @@ static int PatchImm32(DWORD va, int off, DWORD expect, DWORD nv)
 }
 
 // ============================================================
+//  Occupancy / content cell-index bounds  @ 0x568710/0x5687A7/0x568B58
+//  Three `cmp eax,0x40000` sites in MapClass::AddContentAt / RemoveContentAt
+//  that gate a Cells.Items[eax] cell access (eax = cell index). They were
+//  wrongly classified as "buffer" bounds and skipped by ApplyBoundsPatches,
+//  because the `mov reg,[Items+eax*4]` access is BEFORE the cmp (a re-validate),
+//  not after. With the bound left at 0x40000, any cell whose index >= 0x40000
+//  -- i.e. Y > 256 at stride 1024 -- is rejected, so a unit MOVING onto a cell
+//  in the lower half of a big map (occupancy is updated via these functions)
+//  gets stuck. The array is 0x100000 entries and the access already happened,
+//  so raising the bound to g_MapTotal is safe. NO-OP at stride 512.
+//  (This is the "can't path past the 512/Y>256 line" movement bug.)
+// ============================================================
+int ApplyOccupancyBoundPatches(FILE* log)
+{
+    const DWORD total = static_cast<DWORD>(g_MapTotal);
+    if (total == 0x40000)
+    {
+        if (log) fprintf(log, "[occ] content cell-index bounds stay 0x40000  [no-op]\n");
+        return 0;
+    }
+    static const DWORD sites[] = { 0x568710, 0x5687A7, 0x568B58 };
+    int n = 0;
+    for (int i = 0; i < 3; ++i)
+        n += PatchImm32(sites[i], 1, 0x40000, total);   // imm32 is at +1 (opcode 3D)
+    if (log) fprintf(log, "[occ] AddContentAt/RemoveContentAt cell bounds 0x40000->0x%X : %d/3\n",
+                     total, n);
+    return n;
+}
+
+// ============================================================
 //  Antares.dll cell-index patch.
 //  Antares REIMPLEMENTS large parts of the engine (e.g. the shroud
 //  reveal via its MapRevealer class) and looks up cells with YRpp's

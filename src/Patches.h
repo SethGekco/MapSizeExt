@@ -34,6 +34,12 @@ int ApplyCellArrayPopulationStride(FILE* log);
 // 512. Returns the number of immediates patched.
 int ApplyBoundsPatches(FILE* log, bool patchCmp, bool patchRootWH);
 
+// Patches 3 cell-index bounds (cmp eax,0x40000) in AddContentAt/RemoveContentAt
+// that ApplyBoundsPatches wrongly skipped -> without this, units cannot update
+// occupancy on cells with index>=0x40000 (Y>256 @ stride 1024) = stuck moving
+// toward the bottom of big maps. NO-OP at 512.
+int ApplyOccupancyBoundPatches(FILE* log);
+
 // Fixes the inverse index->(X,Y) conversions (and 0x1FF / sar 9) so
 // coordinates >=512 don't wrap to the top-left. NO-OP at stride 512.
 int ApplyCoordPatches(FILE* log);
