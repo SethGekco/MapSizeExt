@@ -589,3 +589,39 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
     R->EAX(0x1F9C);          // replicate mov eax,0x1f9c
     return 0x4D3925;
 }
+
+// ------------------------------------------------------------------
+//  Safety net for the full-map cell iterator @0x578290 (the passability/
+//  movement-zone walk fixed by ApplyIteratorStridePatches). The walk terminates
+//  by hitting NULL border cells; if the stride-adjusted geometry ever fails to
+//  land on that null border, the walk would step the slot pointer past the
+//  Cells.Items array and return a GARBAGE cell -> UpdatePassability then writes
+//  through it and corrupts a live object's vtable (observed crash: virtual call
+//  to heap garbage 0x07BF0035, via the coord-transform path). This guard checks
+//  the current slot pointer [Map+0x118] at entry; if it is outside
+//  [Items, Items + MapTotal*4) it returns a NULL cell (EAX=0), which makes the
+//  caller's `while (cell != null)` loop stop cleanly. Jumps to the bare `ret`
+//  at 0x5782D4 (no registers were pushed yet at entry, so no imbalance).
+//  When the geometry is correct this never fires; it only converts a would-be
+//  OOB corruption into a clean, early loop termination. NO-OP at stride 512.
+static int g_IterGuardFires = 0;
+DEFINE_HOOK(578290, CellIterator_OOBGuard, 6)
+{
+    const DWORD map   = R->ECX();
+    const DWORD items = *reinterpret_cast<DWORD*>(map + 0x13C);   // Cells.Items
+    const DWORD cur   = *reinterpret_cast<DWORD*>(map + 0x118);   // current slot ptr
+    if (g_MapStride > 512 && items &&
+        (cur < items || cur >= items + static_cast<DWORD>(g_MapTotal) * 4))
+    {
+        if (g_IterGuardFires < 25)
+        {
+            ++g_IterGuardFires;
+            DeployDiagLog("ITER-OOB guard #%d: slot=0x%X items=0x%X end=0x%X -> return null\n",
+                          g_IterGuardFires, cur, items, items + static_cast<DWORD>(g_MapTotal) * 4);
+        }
+        R->EAX(0);           // null cell -> caller's iteration loop stops
+        return 0x5782D4;     // bare `ret`
+    }
+    R->EAX(*reinterpret_cast<DWORD*>(map + 0x114));   // replicate mov eax,[ecx+0x114]
+    return 0x578296;
+}
