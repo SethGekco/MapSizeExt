@@ -618,12 +618,26 @@ DEFINE_HOOK(578290, CellIterator_OOBGuard, 6)
         {
             cell = *reinterpret_cast<DWORD*>(cur);   // cell ptr in this slot (slot is in-bounds)
             // The population loop fills only the iso-diamond of valid cells; the array
-            // corners outside it are never written and hold GARBAGE (low data-segment
-            // addresses like ~0x8809xx). Walking one makes UpdatePassability write
-            // through it and corrupt globals (observed: 0x880A04 -> AV in coord code).
-            // Valid cells are heap objects in [0x10000000, 0x40000000); a non-null cell
-            // ptr outside that window is the end of valid cells -> stop the walk here.
-            if (cell != 0 && (cell < 0x10000000 || cell >= 0x40000000)) stop = true;
+            // corners outside it are never written and hold GARBAGE cell pointers.
+            // Address-range checks fail (real cells can be below 0x10000000), so use
+            // CELL IDENTITY: a real cell at slot N has MapCoords (X@+0x24, Y@+0x26)
+            // equal to N's (X = idx % stride, Y = idx / stride). Garbage won't match.
+            // Stopping at the first mismatch = the valid/garbage boundary = the same
+            // place vanilla's walk terminates on a null border cell.
+            if (cell != 0)
+            {
+                if (cell < 0x00400000 || cell >= 0x40000000)
+                    stop = true;                       // wild ptr: don't even deref it
+                else
+                {
+                    unsigned idx = static_cast<unsigned>((cur - items) / 4);
+                    int ex = static_cast<int>(idx % static_cast<unsigned>(g_MapStride));
+                    int ey = static_cast<int>(idx / static_cast<unsigned>(g_MapStride));
+                    int cx = *reinterpret_cast<short*>(cell + 0x24);
+                    int cy = *reinterpret_cast<short*>(cell + 0x26);
+                    if (cx != ex || cy != ey) stop = true;   // coords don't match slot -> garbage
+                }
+            }
         }
         if (stop)
         {
