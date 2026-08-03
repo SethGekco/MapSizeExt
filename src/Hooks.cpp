@@ -532,32 +532,21 @@ DEFINE_HOOK(567F34, RevealArea2_ShroudWrite_Diag, 6)
 DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 5)
 {
     // The function derefs ds:0x880A04 as `mov ecx,[0x880A04]; mov esi,[ecx];
-    // call [esi+0x78]`. At stride 1024 this singleton is set (by the struct-copy
-    // @0x660334) to a NON-object -- null, wild, or a pointer whose "vtable" is
-    // garbage -- so the virtual call jumps into heap junk (EIP 0x07Cxxxxx) on unit
-    // spawn/move (via the sync-log coord path). Skip the function whenever the
-    // singleton is not a real gamemd object. A valid object's vtable lives in the
-    // exe (.rdata < 0x800000); garbage does not. At stride 512 keep the plain
-    // null-check so the vanilla path is untouched.
+    // call [esi+0x78]`. At stride 1024 that singleton is a NON-object (observed a
+    // heap ptr whose vtable is garbage -> the virtual call jumps into heap junk
+    // 0x07Cxxxxx on unit spawn). Validating the vtable range false-passed (the
+    // garbage landed inside the exe range), so validate nothing: this function has
+    // exactly ONE caller (0x65FE3B, inside the fn reached only from
+    // Multiplay_LogToSync), and its result is consumed only by sync-checksum
+    // logging -- never gameplay -- so at stride>512 skip it unconditionally.
+    // eax=0 is a harmless logged value. Stride 512 keeps the vanilla null-check.
     DWORD s = *reinterpret_cast<DWORD*>(0x00880A04);
-    bool skip = (s == 0);
-    if (!skip && g_MapStride > 512)
-    {
-        if (s < 0x00401000 || s >= 0x40000000)
-            skip = true;                                       // wild singleton ptr
-        else
-        {
-            DWORD vtbl = *reinterpret_cast<DWORD*>(s);         // object's vtable
-            if (vtbl < 0x00401000 || vtbl >= 0x00800000)
-                skip = true;                                   // not a gamemd vtable -> not an object
-        }
-    }
-    if (skip)
+    if (g_MapStride > 512 || s == 0)
     {
         R->EAX(0);
         return 0x66053A;   // a bare `ret` (c3) -> clean return to caller
     }
-    return 0;              // valid coord object -> run original
+    return 0;              // stride 512, non-null singleton -> run original
 }
 
 // ============================================================
