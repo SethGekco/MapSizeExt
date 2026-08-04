@@ -40,6 +40,7 @@ static void ApplyInit()
     g_MapMaxW         = cfg.MaxWidth;
     g_MapMaxH         = cfg.MaxHeight;
     g_MapMaxDimension = cfg.MaxDimension;
+    g_CrashGuard      = cfg.PatchCrashGuard;
 
     // IsoMapPack5 decode-buffer bump: 400x640x2 -> 768x1024x2 (fixed 3x).
     const DWORD isoW = 768, isoH = 1024, isoBytes = isoW * isoH * 2;

@@ -69,5 +69,6 @@ extern int g_MapTotal;          // replaces hardcoded 262144 (512*512)
 extern int g_MapMaxW;           // max map width  (default 512)
 extern int g_MapMaxH;           // max map height (default 512)
 extern int g_MapMaxDimension;   // per-axis gate: replaces cmp ax,0x200.
+extern int g_CrashGuard;        // 1 = GetCellAt garbage-slot guard active (INI PatchCrashGuard)
                                 // W and H are checked independently;
                                 // there is NO W+H sum check in the engine.

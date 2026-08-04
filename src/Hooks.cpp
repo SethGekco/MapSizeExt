@@ -29,6 +29,7 @@
 // Global runtime values - set in SyringeHandshake (Main.cpp)
 int g_MapStride       = 512;
 int g_MapTotal        = 262144;  // 512 * 512
+int g_CrashGuard      = 1;       // GetCellAt garbage-slot guard (INI PatchCrashGuard)
 int g_MapMaxW         = 512;
 int g_MapMaxH         = 512;
 int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
@@ -569,7 +570,7 @@ DEFINE_HOOK(565766, GetCellAt_GarbageGuard, 6)
     const DWORD items = *reinterpret_cast<DWORD*>(map + 0x13C);
     const int   index = static_cast<int>(R->EDX());
     DWORD cell = *reinterpret_cast<DWORD*>(items + static_cast<DWORD>(index) * 4);
-    if (g_MapStride > 512 && cell)
+    if (g_MapStride > 512 && g_CrashGuard && cell)
     {
         bool ok = (cell >= 0x04000000 && cell < 0x40000000);   // plausible heap object
         if (ok)
