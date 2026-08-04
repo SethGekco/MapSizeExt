@@ -601,30 +601,33 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 }
 
 // ------------------------------------------------------------------
-//  WALL-FRAME DIAGNOSTIC (stride>512). The wall-connect fn stores the computed
-//  connection frame at cell+0x11E (low nibble = which of 4 neighbours hold a
-//  matching wall) via `mov [esi+0x11e],al` @0x48088D; the draw reads it as the
-//  sprite index. Detection is already confirmed correct at 1024, so log the
-//  actual stored frame per wall cell: coords, frame nibble, overlay type, +0x10C.
-//  A horizontal/vertical run should show >=2 bits set; an all-zero nibble on a
-//  wall with neighbours means the frame never gets applied (computation bug),
-//  while a correct nibble points the finger at the draw/sprite path.
-DEFINE_HOOK(48088D, WallFrame_Diag, 6)
+//  WALL-DRAW DIAGNOSTIC (stride>512). Stored frame at cell+0x11E is CORRECT at
+//  1024 (confirmed). The draw @0x47F9C6 branches on `cmp [ebx+0x294],0x7e`: only
+//  the ==0x7e path reads the connection frame (+0x11E); the other path (0x47fa69)
+//  ignores it. Log, at draw time: the cell coords, the branch decider
+//  [ebx+0x294], and the frame byte at +0x11E -- so we see whether walls take the
+//  frame branch at 1024 and read the right frame. ESI=cell, EBX=overlay type here.
+DEFINE_HOOK(47F9C6, WallDraw_Diag, 7)
 {
     static int fires = 0;
-    if (g_MapStride > 512 && fires < 60)
+    if (g_MapStride > 512 && fires < 50)
     {
         DWORD cell = R->ESI();
-        int fr   = R->EAX() & 0x0F;               // low nibble = connection frame
-        int X    = *reinterpret_cast<short*>(cell + 0x24);
-        int Y    = *reinterpret_cast<short*>(cell + 0x26);
-        int ovl  = *reinterpret_cast<int*>(cell + 0x44);
-        int f10c = *reinterpret_cast<short*>(cell + 0x10C);
-        ++fires;
-        DeployDiagLog("WALLFRAME #%d cell(%d,%d) frame=0x%X overlay=%d +0x10C=%d\n",
-                      fires, X, Y, fr, ovl, f10c);
+        DWORD otype = R->EBX();
+        int X = *reinterpret_cast<short*>(cell + 0x24);
+        int Y = *reinterpret_cast<short*>(cell + 0x26);
+        if (X >= 0 && X < 1024 && Y >= 0 && Y < 1024)   // sanity: esi is a cell
+        {
+            int dec = *reinterpret_cast<int*>(otype + 0x294);
+            int fr  = *reinterpret_cast<unsigned char*>(cell + 0x11E);
+            int ovl = *reinterpret_cast<int*>(cell + 0x44);
+            ++fires;
+            DeployDiagLog("WALLDRAW #%d cell(%d,%d) overlay=%d [otype+0x294]=%d(0x%X) frameByte=0x%X %s\n",
+                          fires, X, Y, ovl, dec, dec, fr,
+                          dec == 0x7e ? "-> FRAME branch" : "-> no-frame branch");
+        }
     }
-    return 0;   // continue original (mov [esi+0x11e],al)
+    return 0;   // continue original (cmp [ebx+0x294],0x7e)
 }
 
 // ------------------------------------------------------------------
