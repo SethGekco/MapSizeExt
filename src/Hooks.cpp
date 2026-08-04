@@ -639,33 +639,32 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 }
 
 // ------------------------------------------------------------------
-//  WALL-DRAW DIAGNOSTIC (stride>512). Stored frame at cell+0x11E is CORRECT at
-//  1024 (confirmed). The draw @0x47F9C6 branches on `cmp [ebx+0x294],0x7e`: only
-//  the ==0x7e path reads the connection frame (+0x11E); the other path (0x47fa69)
-//  ignores it. Log, at draw time: the cell coords, the branch decider
-//  [ebx+0x294], and the frame byte at +0x11E -- so we see whether walls take the
-//  frame branch at 1024 and read the right frame. ESI=cell, EBX=overlay type here.
-DEFINE_HOOK(47F9C6, WallDraw_Diag, 7)
+//  WALL-CONNECTION-DRAW DIAGNOSTIC (stride>512). Real walls (wall flag
+//  [otype+0x2a8]!=0) reach 0x47f974 and read the connection frame at 0x47f99c
+//  (`mov cl,[esi+0x11e]`); they also push a draw param [esi+0x10A]. Log, at that
+//  read, the cell coords, the frame the draw actually uses, and the +0x10A/+0x10C
+//  draw params -- so we see whether the correct frame reaches the blit and
+//  whether a per-cell draw value is stride-corrupted. ESI=cell here.
+DEFINE_HOOK(47F99C, WallConnDraw_Diag, 6)
 {
     static int fires = 0;
     if (g_MapStride > 512 && fires < 50)
     {
         DWORD cell = R->ESI();
-        DWORD otype = R->EBX();
         int X = *reinterpret_cast<short*>(cell + 0x24);
         int Y = *reinterpret_cast<short*>(cell + 0x26);
-        if (X >= 0 && X < 1024 && Y >= 0 && Y < 1024)   // sanity: esi is a cell
+        if (X >= 0 && X < 1024 && Y >= 0 && Y < 1024)
         {
-            int dec = *reinterpret_cast<int*>(otype + 0x294);
-            int fr  = *reinterpret_cast<unsigned char*>(cell + 0x11E);
-            int ovl = *reinterpret_cast<int*>(cell + 0x44);
+            int fr   = *reinterpret_cast<unsigned char*>(cell + 0x11E);
+            int ovl  = *reinterpret_cast<int*>(cell + 0x44);
+            int f10a = *reinterpret_cast<short*>(cell + 0x10A);
+            int f10c = *reinterpret_cast<short*>(cell + 0x10C);
             ++fires;
-            DeployDiagLog("WALLDRAW #%d cell(%d,%d) overlay=%d [otype+0x294]=%d(0x%X) frameByte=0x%X %s\n",
-                          fires, X, Y, ovl, dec, dec, fr,
-                          dec == 0x7e ? "-> FRAME branch" : "-> no-frame branch");
+            DeployDiagLog("WALLCONN #%d cell(%d,%d) overlay=%d frame=0x%X +0x10A=%d +0x10C=%d\n",
+                          fires, X, Y, ovl, fr, f10a, f10c);
         }
     }
-    return 0;   // continue original (cmp [ebx+0x294],0x7e)
+    return 0;   // continue original (mov cl,[esi+0x11e])
 }
 
 // ------------------------------------------------------------------
