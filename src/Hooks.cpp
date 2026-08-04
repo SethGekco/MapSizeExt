@@ -785,3 +785,46 @@ DEFINE_HOOK(47F96A, OverlayP2_Diag, 6)
     }
     return 0;   // continue (mov cl,[ebx+0x2a8])
 }
+
+// ============================================================
+//  WALL-CONNECT NEIGHBOUR PROBE (stride>512). CellClass::wall-connection
+//  computer @0x485390 loops the 4 cardinal directions (edi=0..3 -> N,E,S,W),
+//  reads the neighbour offset from the 0x89f688 coord table, and calls the
+//  coord->cell lookup 0x5657a0. We hook right AFTER that call (@0x4853F5,
+//  `mov edx,ds:0xA83D84`, 6 bytes) where EAX=neighbour cell, ESI=this cell,
+//  EDI=direction. Logging the neighbour cell's OWN coords tells us whether the
+//  N/S (row-crossing) lookups return the CORRECT adjacent cell at stride 1024
+//  -- the horizontal E/W ones already work, so a wrong (X,Y) here on N/S is the
+//  defect. Gated to a small coordinate window to keep the log readable.
+// ============================================================
+static int g_WConnFires = 0;
+DEFINE_HOOK(4853F5, WallConnect_NeighbourProbe, 6)
+{
+    if (g_MapStride > 512 && g_WConnFires < 400)
+    {
+        DWORD mycell = R->ESI();
+        DWORD ncell  = R->EAX();
+        int dir = R->EDI<int>();                       // 0=N,1=E,2=S,3=W
+        int mx = *reinterpret_cast<short*>(mycell + 0x24);
+        int my = *reinterpret_cast<short*>(mycell + 0x26);
+        if (mx >= 0 && mx < 1024 && my >= 0 && my < 1024)
+        {
+            int nx = -1, ny = -1, novl = -99;
+            if (ncell >= 0x00400000 && ncell < 0x40000000)
+            {
+                nx   = *reinterpret_cast<short*>(ncell + 0x24);
+                ny   = *reinterpret_cast<short*>(ncell + 0x26);
+                novl = *reinterpret_cast<int*>(ncell + 0x44);
+            }
+            const char* dn = dir==0?"N":dir==1?"E":dir==2?"S":dir==3?"W":"?";
+            int wantx = mx + (dir==1?1:dir==3?-1:0);
+            int wanty = my + (dir==0?-1:dir==2?1:0);
+            DeployDiagLog("WCONN (%d,%d) %s want(%d,%d) got(%d,%d) ov=%d %s\n",
+                          mx,my,dn,wantx,wanty,nx,ny,novl,
+                          (nx==wantx&&ny==wanty)?"ok":"*** WRONG CELL ***");
+            ++g_WConnFires;
+        }
+    }
+    R->EDX(*reinterpret_cast<DWORD*>(0x00A83D84));      // replicate mov edx,ds:0xA83D84
+    return 0x4853FB;
+}
