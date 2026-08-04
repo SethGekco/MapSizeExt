@@ -550,6 +550,44 @@ DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 5)
 }
 
 // ============================================================
+//  MapClass::GetCellAt(coord) garbage-slot guard  @0x565766
+//  0x565730 converts a lepton coord to a cell index (shl @0x565757 patched to
+//  1024), bound-checks (js / cmp [Map+0x140]), then returns Items[index] unless
+//  it is null (test/je -> a safe dummy cell). BUT the Items array corners outside
+//  the populated iso-diamond hold NON-NULL GARBAGE at 1024 (leftover pointers,
+//  e.g. 0x465F5445 = "ET_F" string data), so the null check passes and it returns
+//  garbage -> caller derefs [garbage+0x140] -> AV (observed: a HunterSeeker/flying
+//  unit's cell lookup @0x4CDD5F).
+//  We hook the slot read: a real cell is a heap object whose MapCoords match the
+//  slot index; anything else is garbage -> force it to 0 so the function's own
+//  test/je routes it to the dummy cell. At entry ECX=Map, EDX=index (already
+//  validated in-bounds). Replicate `mov ecx,[ecx+0x13c]; mov edx,[ecx+edx*4]`
+//  and continue at the test. NO-OP at stride 512.
+DEFINE_HOOK(565766, GetCellAt_GarbageGuard, 6)
+{
+    const DWORD map   = R->ECX();
+    const DWORD items = *reinterpret_cast<DWORD*>(map + 0x13C);
+    const int   index = static_cast<int>(R->EDX());
+    DWORD cell = *reinterpret_cast<DWORD*>(items + static_cast<DWORD>(index) * 4);
+    if (g_MapStride > 512 && cell)
+    {
+        bool ok = (cell >= 0x04000000 && cell < 0x40000000);   // plausible heap object
+        if (ok)
+        {
+            const int ex = index % static_cast<int>(g_MapStride);
+            const int ey = index / static_cast<int>(g_MapStride);
+            const int cx = *reinterpret_cast<short*>(cell + 0x24);
+            const int cy = *reinterpret_cast<short*>(cell + 0x26);
+            ok = (cx == ex && cy == ey);                        // identity: coords match slot
+        }
+        if (!ok) cell = 0;                                      // garbage -> null -> dummy
+    }
+    R->ECX(items);        // replicate mov ecx,[ecx+0x13c]
+    R->EDX(cell);         // replicate (validated) mov edx,[ecx+edx*4]
+    return 0x56576F;      // continue at `test edx,edx`
+}
+
+// ============================================================
 //  PATHFINDING DIAGNOSTIC  (stride > 512)
 //  FootClass::UpdatePathfinding @ 0x4D3920 solves a unit's path.
 //    b8 9c 1f 00 00   mov eax,0x1f9c   (A* stack-buffer size; 5 stolen bytes)
