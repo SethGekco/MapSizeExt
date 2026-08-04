@@ -727,3 +727,61 @@ DEFINE_HOOK(578290, CellIterator_OOBGuard, 6)
     R->EAX(*reinterpret_cast<DWORD*>(map + 0x114));   // replicate mov eax,[ecx+0x114]
     return 0x578296;
 }
+
+// ============================================================
+//  OVERLAY-DRAW DISPATCH DIAGNOSTIC (stride>512). Two paths read the wall frame:
+//  PATH 1 @0x47f908 (SlopeIndex-based, terrain-following overlays) and PATH 2
+//  @0x47f96a (wall-flag [ebx+0x2a8] -> connection draw). Probe BOTH so whichever
+//  path a wall takes is captured, with the stored frame (cell+0x11E). If walls
+//  draw with frame 0 while a neighbouring wall exists, the connection PRODUCER
+//  (0x47E044) failed to see the neighbour at stride 1024; if the frame is
+//  correct but segments still don't join, the fault is downstream (draw/iso).
+//  ESI=cell in both; EBX=OverlayTypeClass in path 2.
+// ============================================================
+DEFINE_HOOK(47F908, OverlayP1_Diag, 6)
+{
+    static int fires = 0;
+    if (g_MapStride > 512 && fires < 60)
+    {
+        DWORD cell = R->ESI();
+        int X = *reinterpret_cast<short*>(cell + 0x24);
+        int Y = *reinterpret_cast<short*>(cell + 0x26);
+        if (X >= 0 && X < 1024 && Y >= 0 && Y < 1024)
+        {
+            int ovl   = *reinterpret_cast<int*>(cell + 0x44);
+            int fr    = *reinterpret_cast<unsigned char*>(cell + 0x11E);
+            int slope = *reinterpret_cast<unsigned char*>(cell + 0x11C);
+            if (ovl >= 0)   // only overlay-bearing cells
+            {
+                ++fires;
+                DeployDiagLog("OVL-P1 #%d cell(%d,%d) overlay=%d frame=0x%X slope=%d\n",
+                              fires, X, Y, ovl, fr, slope);
+            }
+        }
+    }
+    return 0;   // continue (mov cl,[esi+0x11c])
+}
+
+DEFINE_HOOK(47F96A, OverlayP2_Diag, 6)
+{
+    static int fires = 0;
+    if (g_MapStride > 512 && fires < 60)
+    {
+        DWORD cell  = R->ESI();
+        DWORD otype = R->EBX();
+        int X = *reinterpret_cast<short*>(cell + 0x24);
+        int Y = *reinterpret_cast<short*>(cell + 0x26);
+        if (X >= 0 && X < 1024 && Y >= 0 && Y < 1024)
+        {
+            int ovl  = *reinterpret_cast<int*>(cell + 0x44);
+            int fr   = *reinterpret_cast<unsigned char*>(cell + 0x11E);
+            int flag = *reinterpret_cast<unsigned char*>(otype + 0x2A8);
+            int aidx = *reinterpret_cast<int*>(otype + 0x294);
+            ++fires;
+            DeployDiagLog("OVL-P2 #%d cell(%d,%d) overlay=%d frame=0x%X wallFlag=%d otypeArrayIdx=%d %s\n",
+                          fires, X, Y, ovl, fr, flag, aidx,
+                          flag ? "-> WALL connect draw" : "-> non-wall draw");
+        }
+    }
+    return 0;   // continue (mov cl,[ebx+0x2a8])
+}
