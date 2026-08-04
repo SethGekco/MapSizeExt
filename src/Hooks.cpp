@@ -669,20 +669,20 @@ DEFINE_HOOK(47F96A, OverlayP2_Diag, 6)
     static int fires = 0;
     if (g_MapStride > 512 && fires < 40)
     {
-        DWORD cell  = R->ESI();
-        DWORD otype = R->EBX();
+        DWORD cell = R->ESI();
         int X = *reinterpret_cast<short*>(cell + 0x24);
         int Y = *reinterpret_cast<short*>(cell + 0x26);
         if (X >= 0 && X < 1024 && Y >= 0 && Y < 1024)
         {
-            int ovl  = *reinterpret_cast<int*>(cell + 0x44);
             int fr   = *reinterpret_cast<unsigned char*>(cell + 0x11E);
-            int flag = *reinterpret_cast<unsigned char*>(otype + 0x2A8);
-            int aidx = *reinterpret_cast<int*>(otype + 0x294);
+            int lvl  = *reinterpret_cast<signed char*>(cell + 0x11B);   // cell height (Level*15 = draw Y offset)
+            int r104 = *reinterpret_cast<int*>(cell + 0x104);           // draw-rect (screen bounds)
+            int r108 = *reinterpret_cast<short*>(cell + 0x108);
+            int r10a = *reinterpret_cast<short*>(cell + 0x10A);
+            int r10c = *reinterpret_cast<short*>(cell + 0x10C);
             ++fires;
-            DeployDiagLog("OVL-P2 #%d cell(%d,%d) overlay=%d frame=0x%X wallFlag=%d otypeArrayIdx=%d %s\n",
-                          fires, X, Y, ovl, fr, flag, aidx,
-                          flag ? "-> WALL connect draw" : "-> non-wall draw");
+            DeployDiagLog("OVL-P2 #%d cell(%d,%d) frame=0x%X Level=%d rect[104=%d 108=%d 10A=%d 10C=%d]\n",
+                          fires, X, Y, fr, lvl, r104, r108, r10a, r10c);
         }
     }
     return 0;   // continue (mov cl,[ebx+0x2a8])
