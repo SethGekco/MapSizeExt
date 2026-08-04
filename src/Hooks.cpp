@@ -601,33 +601,30 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 }
 
 // ------------------------------------------------------------------
-//  WALL-CONNECT DIAGNOSTIC (stride>512). CellClass::AttachesToNeighbourOverlay
-//  @0x480510 is called per wall neighbour: this=ECX=neighbour cell, [esp+4]=the
-//  placing cell's OverlayTypeIndex. Walls render connected by frame bits set when
-//  a neighbour holds a matching wall overlay. Log the neighbour cell, its coords,
-//  its OverlayTypeIndex(+0x44), and the source overlay type -- so we can see if
-//  the neighbour is the null-cell DUMMY (0xABDC50) or has the wrong overlay.
-DEFINE_HOOK(480510, WallAttach_Diag, 5)
+//  WALL-FRAME DIAGNOSTIC (stride>512). The wall-connect fn stores the computed
+//  connection frame at cell+0x11E (low nibble = which of 4 neighbours hold a
+//  matching wall) via `mov [esi+0x11e],al` @0x48088D; the draw reads it as the
+//  sprite index. Detection is already confirmed correct at 1024, so log the
+//  actual stored frame per wall cell: coords, frame nibble, overlay type, +0x10C.
+//  A horizontal/vertical run should show >=2 bits set; an all-zero nibble on a
+//  wall with neighbours means the frame never gets applied (computation bug),
+//  while a correct nibble points the finger at the draw/sprite path.
+DEFINE_HOOK(48088D, WallFrame_Diag, 6)
 {
     static int fires = 0;
     if (g_MapStride > 512 && fires < 60)
     {
-        DWORD ncell = R->ECX();
-        DWORD esp   = R->ESP();
-        int srcOvl  = *reinterpret_cast<int*>(esp + 4);
-        int nX = -1, nY = -1, nOvl = -99;
-        if (ncell)
-        {
-            nX   = *reinterpret_cast<short*>(ncell + 0x24);
-            nY   = *reinterpret_cast<short*>(ncell + 0x26);
-            nOvl = *reinterpret_cast<int*>(ncell + 0x44);
-        }
+        DWORD cell = R->ESI();
+        int fr   = R->EAX() & 0x0F;               // low nibble = connection frame
+        int X    = *reinterpret_cast<short*>(cell + 0x24);
+        int Y    = *reinterpret_cast<short*>(cell + 0x26);
+        int ovl  = *reinterpret_cast<int*>(cell + 0x44);
+        int f10c = *reinterpret_cast<short*>(cell + 0x10C);
         ++fires;
-        DeployDiagLog("WALLATTACH #%d neighbour=0x%X (%d,%d) nOverlay=%d  srcOverlay=%d%s\n",
-                      fires, ncell, nX, nY, nOvl, srcOvl,
-                      ncell == 0xABDC50 ? "  [DUMMY]" : "");
+        DeployDiagLog("WALLFRAME #%d cell(%d,%d) frame=0x%X overlay=%d +0x10C=%d\n",
+                      fires, X, Y, fr, ovl, f10c);
     }
-    return 0;   // continue original
+    return 0;   // continue original (mov [esi+0x11e],al)
 }
 
 // ------------------------------------------------------------------
