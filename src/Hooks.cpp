@@ -639,54 +639,28 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
     return 0x4D3925;
 }
 
-// ------------------------------------------------------------------
-//  OVERLAY-DRAW DISPATCH DIAGNOSTIC (stride>512). Two paths read the wall frame:
-//  PATH 1 @0x47f908 (SlopeIndex-based, terrain-following overlays) and PATH 2
-//  @0x47f96a (wall-flag [ebx+0x2a8] -> connection draw). Probe BOTH so whichever
-//  path a wall takes is captured, with the frame and (path 2) the wall flag &
-//  OverlayTypeClass arrayindex. ESI=cell in both; EBX=OverlayTypeClass in path 2.
-DEFINE_HOOK(47F908, OverlayP1_Diag, 6)
+// ============================================================
+//  SUBZONE-ID saturation (big-map pathfinding fix, per external analysis)
+//  The zone/subzone system stores IDs as 16-bit words in the MapClass arrays
+//  @[Map+0x6c]/[+0x70]; ~14 consumers `movsx` (sign-extend) them. On big maps
+//  the region count exceeds 0x7FFF -> IDs go negative, and a 0x10000 producer
+//  value truncates to 0 (= "unvisited") -> recursive region construction revisits
+//  cells and can overflow the stack. The producer @0x58215B assigns the ID with
+//  `mov cx,[esp+0x10]`, where [esp+0x10] is the FULL 32-bit id (set to ebp
+//  @0x58210F). We saturate it into the signed-16-bit range (<=0x7FFF): every
+//  existing movsx stays positive, no value wraps to 0 (cells still get marked
+//  visited -> no infinite recursion). No consumer/save-format changes. NO-OP at
+//  stride 512 and for maps with <=0x7FFF subzones (the cap never triggers).
+DEFINE_HOOK(58215B, Subzone_SaturateID, 5)   // mov cx,[esp+0x10]
 {
-    static int fires = 0;
-    if (g_MapStride > 512 && fires < 40)
+    if (g_MapStride > 512)
     {
-        DWORD cell = R->ESI();
-        int X = *reinterpret_cast<short*>(cell + 0x24);
-        int Y = *reinterpret_cast<short*>(cell + 0x26);
-        if (X >= 0 && X < 1024 && Y >= 0 && Y < 1024)
-        {
-            int ovl   = *reinterpret_cast<int*>(cell + 0x44);
-            int fr    = *reinterpret_cast<unsigned char*>(cell + 0x11E);
-            int slope = *reinterpret_cast<unsigned char*>(cell + 0x11C);
-            ++fires;
-            DeployDiagLog("OVL-P1 #%d cell(%d,%d) overlay=%d frame=0x%X slope=%d\n",
-                          fires, X, Y, ovl, fr, slope);
-        }
+        DWORD id = *reinterpret_cast<DWORD*>(R->ESP() + 0x10);
+        if (id > 0x7FFF) id = 0x7FFF;                      // fit signed-16-bit consumers
+        R->ECX((R->ECX() & 0xFFFF0000u) | (id & 0xFFFF));  // replicate mov cx with the cap
+        return 0x582160;                                   // continue past the mov
     }
-    return 0;   // continue (mov cl,[esi+0x11c])
-}
-DEFINE_HOOK(47F96A, OverlayP2_Diag, 6)
-{
-    static int fires = 0;
-    if (g_MapStride > 512 && fires < 40)
-    {
-        DWORD cell = R->ESI();
-        int X = *reinterpret_cast<short*>(cell + 0x24);
-        int Y = *reinterpret_cast<short*>(cell + 0x26);
-        if (X >= 0 && X < 1024 && Y >= 0 && Y < 1024)
-        {
-            int fr   = *reinterpret_cast<unsigned char*>(cell + 0x11E);
-            int lvl  = *reinterpret_cast<signed char*>(cell + 0x11B);   // cell height (Level*15 = draw Y offset)
-            int r104 = *reinterpret_cast<int*>(cell + 0x104);           // draw-rect (screen bounds)
-            int r108 = *reinterpret_cast<short*>(cell + 0x108);
-            int r10a = *reinterpret_cast<short*>(cell + 0x10A);
-            int r10c = *reinterpret_cast<short*>(cell + 0x10C);
-            ++fires;
-            DeployDiagLog("OVL-P2 #%d cell(%d,%d) frame=0x%X Level=%d rect[104=%d 108=%d 10A=%d 10C=%d]\n",
-                          fires, X, Y, fr, lvl, r104, r108, r10a, r10c);
-        }
-    }
-    return 0;   // continue (mov cl,[ebx+0x2a8])
+    return 0;   // stride 512: run original
 }
 
 // ------------------------------------------------------------------
