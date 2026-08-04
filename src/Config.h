@@ -37,6 +37,8 @@ struct MapSizeConfig
     int PatchAdjacency;   // 8-neighbour cell-offset table @0x7E3774 (ore spread etc.)
     int PatchIterator;    // full-map cell-iterator byte-stride (walk-on-water/pathing fix)
     int PatchCrashGuard;  // GetCellAt garbage-slot guard (flying-unit crash fix)
+    int PatchSubzone;     // subzone hierarchy block scale 4->8 (Krisztiaan handoff)
+    int PatchRadar;       // radar/minimap surface resize 512->1024 (Krisztiaan handoff)
     int PatchIso;         // EXPERIMENTAL tactical-render iso cell sites (default 0)
 
     int Total() const { return Stride * Stride; }
@@ -72,6 +74,8 @@ inline MapSizeConfig ReadConfig()
     cfg.PatchAdjacency = GetPrivateProfileIntA("Debug", "PatchAdjacency", 1, iniPath);
     cfg.PatchIterator  = GetPrivateProfileIntA("Debug", "PatchIterator",  1, iniPath);
     cfg.PatchCrashGuard= GetPrivateProfileIntA("Debug", "PatchCrashGuard",1, iniPath);
+    cfg.PatchSubzone   = GetPrivateProfileIntA("Debug", "PatchSubzone",   1, iniPath);
+    cfg.PatchRadar     = GetPrivateProfileIntA("Debug", "PatchRadar",     1, iniPath);
     cfg.PatchIso       = GetPrivateProfileIntA("Debug", "PatchIso",       0, iniPath);
 
     // Clamp: never go below the vanilla values.

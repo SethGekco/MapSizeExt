@@ -45,6 +45,11 @@ int ApplyOccupancyBoundPatches(FILE* log);
 // full-map passability/movement-zone recompute (walk-on-water, can't-path). 512-safe.
 int ApplyIteratorStridePatches(FILE* log);
 
+// Subzone hierarchy block scale 4->8 (Krisztiaan handoff): keeps subzone IDs in
+// range on big maps. Radar surface resize 512->1024: enables the minimap.
+int ApplySubzoneScalePatches(FILE* log);
+int ApplyRadarPatches(FILE* log);
+
 // Fixes the inverse index->(X,Y) conversions (and 0x1FF / sar 9) so
 // coordinates >=512 don't wrap to the top-left. NO-OP at stride 512.
 int ApplyCoordPatches(FILE* log);
