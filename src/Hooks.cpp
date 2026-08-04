@@ -639,32 +639,53 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 }
 
 // ------------------------------------------------------------------
-//  WALL-CONNECTION-DRAW DIAGNOSTIC (stride>512). Real walls (wall flag
-//  [otype+0x2a8]!=0) reach 0x47f974 and read the connection frame at 0x47f99c
-//  (`mov cl,[esi+0x11e]`); they also push a draw param [esi+0x10A]. Log, at that
-//  read, the cell coords, the frame the draw actually uses, and the +0x10A/+0x10C
-//  draw params -- so we see whether the correct frame reaches the blit and
-//  whether a per-cell draw value is stride-corrupted. ESI=cell here.
-DEFINE_HOOK(47F99C, WallConnDraw_Diag, 6)
+//  OVERLAY-DRAW DISPATCH DIAGNOSTIC (stride>512). Two paths read the wall frame:
+//  PATH 1 @0x47f908 (SlopeIndex-based, terrain-following overlays) and PATH 2
+//  @0x47f96a (wall-flag [ebx+0x2a8] -> connection draw). Probe BOTH so whichever
+//  path a wall takes is captured, with the frame and (path 2) the wall flag &
+//  OverlayTypeClass arrayindex. ESI=cell in both; EBX=OverlayTypeClass in path 2.
+DEFINE_HOOK(47F908, OverlayP1_Diag, 6)
 {
     static int fires = 0;
-    if (g_MapStride > 512 && fires < 50)
+    if (g_MapStride > 512 && fires < 40)
     {
         DWORD cell = R->ESI();
         int X = *reinterpret_cast<short*>(cell + 0x24);
         int Y = *reinterpret_cast<short*>(cell + 0x26);
         if (X >= 0 && X < 1024 && Y >= 0 && Y < 1024)
         {
-            int fr   = *reinterpret_cast<unsigned char*>(cell + 0x11E);
-            int ovl  = *reinterpret_cast<int*>(cell + 0x44);
-            int f10a = *reinterpret_cast<short*>(cell + 0x10A);
-            int f10c = *reinterpret_cast<short*>(cell + 0x10C);
+            int ovl   = *reinterpret_cast<int*>(cell + 0x44);
+            int fr    = *reinterpret_cast<unsigned char*>(cell + 0x11E);
+            int slope = *reinterpret_cast<unsigned char*>(cell + 0x11C);
             ++fires;
-            DeployDiagLog("WALLCONN #%d cell(%d,%d) overlay=%d frame=0x%X +0x10A=%d +0x10C=%d\n",
-                          fires, X, Y, ovl, fr, f10a, f10c);
+            DeployDiagLog("OVL-P1 #%d cell(%d,%d) overlay=%d frame=0x%X slope=%d\n",
+                          fires, X, Y, ovl, fr, slope);
         }
     }
-    return 0;   // continue original (mov cl,[esi+0x11e])
+    return 0;   // continue (mov cl,[esi+0x11c])
+}
+DEFINE_HOOK(47F96A, OverlayP2_Diag, 6)
+{
+    static int fires = 0;
+    if (g_MapStride > 512 && fires < 40)
+    {
+        DWORD cell  = R->ESI();
+        DWORD otype = R->EBX();
+        int X = *reinterpret_cast<short*>(cell + 0x24);
+        int Y = *reinterpret_cast<short*>(cell + 0x26);
+        if (X >= 0 && X < 1024 && Y >= 0 && Y < 1024)
+        {
+            int ovl  = *reinterpret_cast<int*>(cell + 0x44);
+            int fr   = *reinterpret_cast<unsigned char*>(cell + 0x11E);
+            int flag = *reinterpret_cast<unsigned char*>(otype + 0x2A8);
+            int aidx = *reinterpret_cast<int*>(otype + 0x294);
+            ++fires;
+            DeployDiagLog("OVL-P2 #%d cell(%d,%d) overlay=%d frame=0x%X wallFlag=%d otypeArrayIdx=%d %s\n",
+                          fires, X, Y, ovl, fr, flag, aidx,
+                          flag ? "-> WALL connect draw" : "-> non-wall draw");
+        }
+    }
+    return 0;   // continue (mov cl,[ebx+0x2a8])
 }
 
 // ------------------------------------------------------------------
