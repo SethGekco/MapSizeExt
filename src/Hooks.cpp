@@ -32,6 +32,7 @@ int g_MapTotal        = 262144;  // 512 * 512
 int g_CrashGuard      = 1;       // GetCellAt garbage-slot guard (INI PatchCrashGuard)
 int g_StrideSkipFrom  = 0;       // bisection: skip kCellStrideSites [from,to)
 int g_StrideSkipTo    = 0;
+int g_CuratedBase     = 0;       // 1 = defer conflicting accessor/alloc hooks to his patches
 int g_MapMaxW         = 512;
 int g_MapMaxH         = 512;
 int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
@@ -149,6 +150,7 @@ static void DumpVisibleCellsLighting()
 
 DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 {
+    if (g_CuratedBase) return 0;   // his 74 leave 0x5656EA at 512; defer to it
     int y = R->EAX<int>();
     int x = R->ECX<int>();
     int index = y * g_MapStride + x;
@@ -175,6 +177,7 @@ DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 // ============================================================
 DEFINE_HOOK(48EB12, MapClass_Alloc_Stride1, 6)
 {
+    if (g_CuratedBase) return 0;   // his conversion sizes this buffer itself; defer
     int dim = *reinterpret_cast<int*>(R->ESI() + 0x16C);
     R->EDX(dim * g_MapStride);
     return 0x48EB1B;  // push edx
@@ -189,6 +192,7 @@ DEFINE_HOOK(48EB12, MapClass_Alloc_Stride1, 6)
 // ============================================================
 DEFINE_HOOK(48EB35, MapClass_Alloc_Stride2, 5)
 {
+    if (g_CuratedBase) return 0;   // paired with 0x48EB12; defer in curated mode
     R->ECX(R->ECX() * g_MapStride + R->EAX());
     return 0x48EB3A;  // mov [esi+0x174],ecx
 }
@@ -208,6 +212,7 @@ DEFINE_HOOK(48EB35, MapClass_Alloc_Stride2, 5)
 // ============================================================
 DEFINE_HOOK(483B32, MapClass_InlineAccess_Stride, 6)
 {
+    if (g_CuratedBase) return 0;   // his 74 leave 0x483B32 at 512; defer to it
     R->EDI(R->EDI<int>() * g_MapStride);                    // shl edi,0x9
     *reinterpret_cast<int*>(R->ESI() + 0xFC) = R->EBX();    // mov [esi+0xfc],ebx
     DumpMapStateOnce();                                     // diagnostic (once)
@@ -658,7 +663,11 @@ DEFINE_HOOK(58215B, Subzone_SaturateID, 5)   // mov cx,[esp+0x10]
     if (g_MapStride > 512)
     {
         DWORD id = *reinterpret_cast<DWORD*>(R->ESP() + 0x10);
-        if (id > 0x7FFF) id = 0x7FFF;                      // fit signed-16-bit consumers
+        // Curated mode applies his 14 movsx->movzx consumers, so the full unsigned
+        // range is safe: cap at 0xFFFE (reserve 0xFFFF). Broad mode keeps signed
+        // consumers -> cap at 0x7FFF to stay positive.
+        DWORD cap = g_CuratedBase ? 0xFFFEu : 0x7FFFu;
+        if (id > cap) id = cap;
         R->ECX((R->ECX() & 0xFFFF0000u) | (id & 0xFFFF));  // replicate mov cx with the cap
         return 0x582160;                                   // continue past the mov
     }

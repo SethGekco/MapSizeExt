@@ -381,10 +381,29 @@ then carry over our plane-init/bounds coverage (adds 300×300). Best of both.
 ---
 
 ## 5. Port plan (his base → MapSizeExt) — in progress
-1. Replace the broad `shl`/`cmp` sweep with his **74-patch table** +
-   **accessor-hook activation** (`0x565812`), unsigned-subzone consumers +
-   `0xFFFE` ceiling, iterator **phase-switch**. → fixes walls + sidebar + gives
-   correct radar/movement.
-2. **Add** our plane-init/bounds coverage for **300×300+** (§2.5 TODO: pin site).
-3. Rename `ApplyRadarPatches`/`kRadar` → overlay-load (they are §2.3).
-4. Keep INI-configurable; keep the crash guards (§2.6/2.7) as belt-and-braces.
+
+### Progress log
+- **M1 (done):** `src/CuratedBase.cpp` applies his 74 patches + 14 subzone
+  `movzx` + 2 Phobos. `[Debug] CuratedBase=1` uses it instead of the broad sweep.
+  Result: maps load/play (250×250 AND 300×300) but **striped shroud + broken
+  placement** — because our compiled hooks ran on top of his patches and fought
+  them (BUG-ATLAS 2.11/2.13). Bisecting the broad sweep to find the wall FP is
+  **confounded** (removing sites kills the building/foundation layer before walls
+  are testable) — abandoned.
+- **M2 (this change):** added `g_CuratedBase`; in curated mode we **defer** the
+  four accessor/alloc hooks that sit at addresses his 74 deliberately leave at
+  512 — `MapClass_OperatorBracket_Stride 0x5656EA`, `MapClass_Alloc_Stride1/2
+  0x48EB12/35`, `MapClass_InlineAccess_Stride 0x483B32` (`if (g_CuratedBase)
+  return 0;`). We **keep** the hooks at his-patched addresses (`0x565757`,
+  `0x5657F1` — they do the 1024 math his skipped byte-patch would), the
+  **dimension-gate hooks** (`0x4C5630/590E`, `0x554BC5` — the >512 coord
+  extension his base lacks, i.e. the 300×300 enabler), and the crash guards
+  (§2.6/2.7). Subzone ceiling switches to `0xFFFE` in curated mode (his movzx).
+  Goal: reproduce his clean walls+buildings+shroud, then verify 300×300.
+- **M3 (next):** confirm/repair 300×300 in curated mode (dim-gate hooks should
+  carry it; if the plane-init garbage §2.5 recurs, add that one patch).
+
+### Remaining
+- Rename `ApplyRadarPatches`/`kRadar` → overlay-load (they are §2.3).
+- Port his delayed-activation timing + iterator phase-switch if save/load needs it.
+- Keep INI-configurable; keep the crash guards as belt-and-braces.

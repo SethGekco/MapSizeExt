@@ -43,6 +43,7 @@ static void ApplyInit()
     g_CrashGuard      = cfg.PatchCrashGuard;
     g_StrideSkipFrom  = cfg.StrideSkipFrom;
     g_StrideSkipTo    = cfg.StrideSkipTo;
+    g_CuratedBase     = cfg.CuratedBase;
 
     // IsoMapPack5 decode-buffer bump: 400x640x2 -> 768x1024x2 (fixed 3x).
     const DWORD isoW = 768, isoH = 1024, isoBytes = isoW * isoH * 2;

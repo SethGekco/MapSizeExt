@@ -76,5 +76,11 @@ extern int g_CrashGuard;        // 1 = GetCellAt garbage-slot guard active (INI 
 // positive by binary search via INI without rebuilding. 0,0 = skip nothing.
 extern int g_StrideSkipFrom;
 extern int g_StrideSkipTo;
+
+// 1 = CuratedBase mode (Krisztiaan's byte patches drive cell math). Our compiled
+// accessor/alloc hooks defer to his patches then (they otherwise fight his
+// conversion); our dimension-gate + crash-guard hooks stay active as the 300x300
+// size extension he lacks. See docs/BUG-ATLAS.md 2.12/2.13.
+extern int g_CuratedBase;
                                 // W and H are checked independently;
                                 // there is NO W+H sum check in the engine.
