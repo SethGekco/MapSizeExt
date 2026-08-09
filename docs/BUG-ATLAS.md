@@ -433,8 +433,24 @@ then carry over our plane-init/bounds coverage (adds 300×300). Best of both.
   `0x483B32` stay active at 1024** (foundation + elevation need them). The
   standard-vs-large split (standard buggier) is unexplained but consistent with a
   registration-stride mismatch that only bit small maps.
-- **M3 (next):** confirm/repair 300×300 in curated mode (dim-gate hooks should
-  carry it; if the plane-init garbage §2.5 recurs, add that one patch).
+- **M3 — DECISION (his standalone DLL builds multi-cell foundations fine):**
+  his foundation coverage comes from his HOOKS, which the piecemeal port never
+  reproduced — confirmed dead end. **His complete source builds locally with
+  plain mingw** (`i686-w64-mingw32-g++ -std=gnu++11 -shared -static-libgcc
+  -Wl,--enable-stdcall-fixup -lpsapi`; his `.syhks00` hooks are GCC
+  `__attribute__((section))`, no Docker/MSVC needed). **New plan: build his
+  source directly as the MapSizeExt DLL (patches + hooks, proven), add ONLY the
+  300×300 fix.** Abandon the CuratedBase-in-MSVC hook-gating branch.
+- **300×300 fix (§2.5), refined:** crash reads plane slot = `-1`
+  (`0xFFFFFFFF`) at index `0x440F5`; construction loop @`0x5663BC` tests `!= 0`,
+  so `-1` is taken as an existing cell → constructs onto `-1` → AV `0x410170`.
+  The plane is init'd (to 0/-1) for a count that covers ≤250×250 but not
+  300×300. TODO: pin the plane-init count/stride in `MapClass_CTOR`
+  (`0x565xxx`-`0x566xxx`); add it as one entry to his patch table.
+
+### Sidebar-brightness answer (see 2.14)
+Pinned to the shroud-buffer alloc hooks `0x48EB12/35`. His source doesn't have
+them, so building from his source fixes the sidebar for free.
 
 ### Remaining
 - Rename `ApplyRadarPatches`/`kRadar` → overlay-load (they are §2.3).
