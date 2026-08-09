@@ -285,6 +285,30 @@ then carry over our plane-init/bounds coverage (adds 300×300). Best of both.
   applying **our** Antares/Phobos patches (they carry no wall/sidebar false
   positive — those live in the gamemd broad sweep, not the module patches).
 
+### 2.13 Piecemeal-port conflict: his byte-patches + OUR Syringe hooks (CuratedBase)
+- **Symptom (CuratedBase + our Antares patches):** shroud stripe PERSISTS
+  (so it is NOT Antares); MCV **cycles elevation** high/ground every cell it
+  moves; base buildings can only be placed in a **far north-east region**
+  (top-right quarter); MCV struggles to deploy. All the halved-coordinate /
+  quarter signatures of the **cell-iteration & reveal path reading at 512**.
+- **Root cause:** the port copied only his **74 byte-patches**, not his
+  **hooks**, and substituted OUR compiled `DEFINE_HOOK`s. His working solution is
+  a *coherent whole* — the 74 patches PLUS: **delayed activation** at MapClass
+  init (`0x565812`; his patches are applied then, not at DllMain), **iterator
+  phase-switching** (the 5 sites `0x5782BD..578482` toggled stock/widened across
+  save-load, `set_reload_sensitive_iterators`), the **unsigned-subzone ceiling**,
+  and a **central-accessor guard / invalid-axis rejection**. Our hooks
+  (operator[] `0x5656EA`, alloc `0x48EB12/35`, inline-access `0x483B32`,
+  lepton/IsCellValid) sit at addresses his 74 deliberately does NOT patch and/or
+  overlap ones it does — so the two mechanisms disagree (Syringe saved original
+  bytes vs his in-place patch; our alloc sizing vs his `MaxNumCells`). Result:
+  parts of the iteration/reveal path resolve at 512 → stripe/quarter/elevation.
+- **Conclusion:** do NOT mix his byte-patches with our hook architecture. Either
+  (a) **adopt his complete source** (patches + hooks, proven-correct ≤250×250)
+  as the MapSizeExt base and add ONLY the 300×300 plane extension on top, or
+  (b) keep OUR broad sweep and surgically exclude the wall/sidebar false-positive
+  site(s). Option (a) is cleaner given his set is proven and self-consistent.
+
 ### 2.12 Compiled-hook vs curated-base interactions (CuratedBase mode)
 - **Observed in CuratedBase milestone 1:** his 74 patches + OUR compiled
   `DEFINE_HOOK`s → maps load & play (250×250 AND 300×300) but **striped shroud**
