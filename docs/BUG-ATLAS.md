@@ -493,3 +493,26 @@ them, so building from his source fixes the sidebar for free.
 - Rename `ApplyRadarPatches`/`kRadar` → overlay-load (they are §2.3).
 - Port his delayed-activation timing + iterator phase-switch if save/load needs it.
 - Keep INI-configurable; keep the crash guards as belt-and-braces.
+
+### 2.17 Bottom-left corner radar-order fatal (dangling tactical singleton 0x880A04)
+- **Symptom (curated 300x300):** ordering a unit to the extreme BOTTOM-LEFT
+  corner via the radar/minimap (without scrolling) fatals; EIP in the heap
+  (`0x021B9CA4`), the crashing object at ESI (e.g. `0x17CE3498`) whose vtable is
+  a heap pointer, not `.rdata`. Bottom-RIGHT and other edges are fine.
+- **Path:** per-object tactical loop `0x660000` iterates `ds:0xb04dac[]` and for
+  each object runs a 4-corner coord-transform (`0x6601F1` family, twin of
+  `0x660540`) that does `mov ecx,[0x880A04]; mov esi,[ecx]; call [esi+0x78]`.
+- **Root:** **`ds:0x880A04` has ZERO writes in gamemd** (18 reads, 0 writes) --
+  it is a tactical/coord-transform singleton set up (or not) by a MODULE. In our
+  broad build it does not fatal here; broad patches **Antares.dll** (73 shl + 75
+  cmp) while the curated his-source build patches only Phobos (2). Hypothesis:
+  Antares initialises the tactical context / this singleton, so unpatched Antares
+  at 1024 leaves it dangling for off-screen bottom-left cells. Guarding `0x660540`
+  does NOT fix it (crash is the twin `0x6601F1`); guarding `0x660000` is too broad
+  (it is the whole object-render loop); the `==0` radar guards do not fire
+  (garbage is non-null).
+- **Next:** port our Antares coverage into his source's ModuleOpcodePatch table
+  (scan Antares.dll for shl-9 + cmp-0x40000 relative to its base), OR find the
+  exact Antares site that sets up `0x880A04` / the tactical projection.
+- **Not the wall/sidebar FP:** curated build has correct walls + sidebar; this is
+  an independent module-init gap.

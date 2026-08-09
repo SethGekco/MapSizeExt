@@ -96,6 +96,11 @@ static struct HookEntry hook_Map512CellIteratorGuard = {
     0x00578290, 0x6, "Map512CellIteratorGuard",
 };
 
+__attribute__((section(".syhks00"), used, aligned(16)))
+static struct HookEntry hook_Map512CoordTransformGuard = {
+    0x00660540, 0x5, "Map512CoordTransformGuard",
+};
+
 typedef struct SyringeRegisters {
     uint32_t origin;
     uint32_t flags;
@@ -944,6 +949,20 @@ extern "C" __declspec(dllexport) DWORD __cdecl Map512CellIteratorGuard(void* reg
     }
     r->eax = *(volatile uint32_t*)(map + 0x114u);   /* replay mov eax,[ecx+0x114] */
     return 0x00578296u;
+}
+
+/* Coord-transform @0x660540 virtual-calls the ds:0x880A04 singleton, whose
+ * vtable is garbage at 1024 -> heap fatal on edge-cell orders (bottom-left).
+ * Our broad build skips it (result only feeds sync-checksum logging); paired
+ * with the 8 iterator shl-9 sites (0x5780b4 ...) that keep the routing coord
+ * correct, so skipping does NOT wrap the destination. Returns bare ret 0x66053A. */
+extern "C" __declspec(dllexport) DWORD __cdecl Map512CoordTransformGuard(void* registers) {
+    SyringeRegisters* r = (SyringeRegisters*)registers;
+    if (!r) {
+        return 0;
+    }
+    r->eax = 0u;
+    return 0x0066053au;
 }
 
 
