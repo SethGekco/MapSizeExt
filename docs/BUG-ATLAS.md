@@ -516,3 +516,46 @@ them, so building from his source fixes the sidebar for free.
   exact Antares site that sets up `0x880A04` / the tactical projection.
 - **Not the wall/sidebar FP:** curated build has correct walls + sidebar; this is
   an independent module-init gap.
+
+- **FIX ATTEMPT #1 (build `9a1500e1`, pending in-game test):** added the missing
+  **75 Antares.dll `cmp` bounds patches** to `g_module_opcode_patch_table` in
+  `curated/yr_map_512_plane_probe.c` (73× `cmp reg,0x3FFFF→0xFFFFF` + 2×
+  `cmp …,0x40000→0x100000`). The hybrid previously had only the 73 Antares `shl`
+  (adding those alone did NOT fix it — see M4/prev handoff), so the `cmp` half was
+  the outstanding delta from the surviving broad build. Rationale: `0x880A04` is a
+  tactical/coord singleton owned by Antares (the Ares reimpl); its unpatched
+  512-based cell-index bounds mis-handle the high-index cells a 300×300@1024 map
+  produces, which the off-screen bottom-left corner exercises.
+  - **Verification done statically:** all 75 sites' expected bytes match the live
+    `Antares.dll` on disk (PE ImageBase `0x10000000`, RVAs are virtual RVAs; `81 /7
+    imm32` for the reg form, `3D imm32` for the eax form). Generator + PE parse in
+    session scratchpad.
+  - **Also fixed:** latent `module_present[16]`/`module_applied[16]` stack overflow
+    (indexed by patch index; table was already 75, now 150 → resized `[256]`).
+  - **STATIC FACT (confirmed this session):** `ds:0x880A04` is referenced by
+    exactly 9 sites in gamemd, **all `mov 0x880a04,%ecx` reads, zero writes / zero
+    `lea`/immediate uses** → gamemd never sets it; a module must. The crash twin
+    `0x6601F1` is the per-corner projection loop inside `0x660050` (a subroutine of
+    the tactical redraw `0x657537`→`0x660000`, iterating the visible-object list
+    `ds:0xb04dac[]`, count `ds:0xb04db8`): `mov ecx,[0x880A04]; mov esi,[ecx];
+    call [esi+0x78]/[esi+0x90]`. It is only reached for objects that pass the clip
+    test at `0x66015c-6c`, which explains the corner-specific manifestation.
+  - **If this does NOT fix it:** fall back to Lead 1 — a conditional wild-pointer
+    guard at `0x6601f1` (or function entry `0x660050`) that skips the projection
+    when `[[0x880A04]]`'s vtable is outside `.rdata [0x400000,0x800000)`. Skipping
+    `0x660000` wholesale is too broad (blanks all object markers); the guard must
+    be conditional on a wild vtable so it only fires in the bad case.
+
+- **FIX ATTEMPT #1 RESULT — did NOT apply (false test):** the retest crashed
+  identically (EIP `0x021B9CA4`, regs EAX=`0x12C`=300, ECX=`0x129`=297, ESI=heap
+  `0x18A46C30`, stack coord `0x24F`=591). The patch log revealed WHY: the whole
+  DLL was a **no-op** — `apply_map512_patches` aborted at the module preflight
+  because **Phobos.dll entry 0's expected bytes (`c1 e3 09` @RVA `0x3ea34`) no
+  longer match the installed Phobos** (now `04 2b c1 50 51 ff`), and a module
+  mismatch was fatal. So NONE of the Antares patches (shl or the new cmp) ever
+  applied, the plane stayed 512, and coord 591>512 overflowed it → this crash is
+  really the **vanilla oversized-map failure**, not a MapSizeExt-1024 bug. See
+  HANDOFF "CRITICAL DISCOVERY". **Fix:** made module preflight mismatches
+  non-fatal (skip the entry) — build `aac7fb72`. The Antares cmp patches now get
+  their first REAL test only once the log shows `patch_applied,…,extension_patches
+  ,<nonzero>`.

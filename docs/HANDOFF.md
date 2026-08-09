@@ -22,14 +22,68 @@ cp MapSizeExt.dll /home/rex/snap/cncra2yr/common/.wine/drive_c/Westwood/RA2/MapS
 His DLL is **hardcoded 1024**, ignores `MAPSIZEEXT.INI`. Logs to
 `yr_map_512_plane_probe.csv` in the RA2 dir.
 
-## CURRENT STATE (build md5 `8efc3e67`, installed)
-**300×300 LOADS AND PLAYS.** Working: walls connect, sidebar correct, building
-foundations correct, unit movement, pathfinding, deploy, radar, shroud,
-bottom-right + most edge orders.
+## ⚠️ CRITICAL DISCOVERY (2026-08-09): the DLL was a SILENT NO-OP
+The crash snapshot `debug/snapshot-20260809-003327/` + its patch log
+(`yr_map_512_plane_probe.csv`) proved that **`apply_map512_patches` was ABORTING
+on every supported attach** and disabling the entire DLL:
+```
+dll_attach,supported,...,phobos=0x778c0000,...
+extension_patch_preflight_mismatch,0,Phobos.dll,0x778fea34
+dll_detach,...,-1,subzone,0,...,extension,0,...     <- status=-1, 0 patches applied
+```
+- **Root cause:** the module patch table's **Phobos entry 0** expects `c1 e3 09`
+  (`shl ebx,9`) at Phobos RVA `0x3ea34`, but the installed **Phobos.dll has
+  `04 2b c1 50 51 ff` there** — the site moved in a newer Phobos build. The old
+  code treated a single module-patch mismatch as FATAL (`g_patch_status=-1;
+  return 0`), which set `g_host_supported=0` and made the activation hook
+  (`Map512PlaneActivate` @`0x565812`) return **eax=512** — so the plane stayed
+  512 and every guard/coord hook no-op'd (`g_patch_status<=0`).
+- **Consequence:** the "bottom-left crash" we chased was essentially **vanilla
+  behaviour on an oversized map** — the map's extreme coord is `0x24F`=591 (>512),
+  which overflows the stock 512 plane → garbage cell/object → heap vtable call
+  `0x021B9CA4`. MapSizeExt was doing nothing. This also means **"adding 73 Antares
+  shl didn't fix bottom-left" was a false negative — they never applied**, and the
+  earlier "300×300 loads and plays" must have been with an older Phobos.dll that
+  still matched.
+- **FIX (build `aac7fb72`, installed):** module-patch preflight mismatches are now
+  **non-fatal** — the entry is skipped (`module_present[i]=0`), matching sites
+  still apply, and the gamemd core plane-widening activates. Now the 148 Antares
+  patches (shl+cmp, verified matching) + gamemd core all apply; the 2 stale Phobos
+  entries skip.
+- **TODO (separate):** re-derive the 2 Phobos inline-stride sites for the current
+  Phobos.dll (its `GetCellIndex` `shl 9` + `MaxCells cmp 0x40000`) so Phobos
+  features work correctly on >512 maps. Skipped for now (no Phobos-feature bug
+  reported). Prev build backup: `…/RA2/MapSizeExt.dll.pre-antarescmp.bak`.
 
-**ONE REMAINING BUG:** ordering a unit to the extreme **BOTTOM-LEFT corner via
-the radar/minimap** → fatal. EIP `0x021B9CA4` (heap = virtual-call into garbage),
-coords ~(307,249). See §2.17.
+## CURRENT STATE (build md5 `aac7fb72`, installed — AWAITING RE-TEST AT REAL 1024)
+Previously *claimed*: 300×300 loads/plays; walls, sidebar, foundations, movement,
+pathfinding, deploy, radar, shroud, bottom-right OK — **but that state must now be
+re-confirmed**, because the DLL was a no-op in the last snapshot. First thing to
+verify on next test: `yr_map_512_plane_probe.csv` shows a `patch_applied,…,
+extension_patches,<nonzero>` line and NO `-1` detach. Only then are we truly at
+1024 and can judge the bottom-left corner.
+
+**BOTTOM-LEFT FIX ATTEMPT (pending in-game verification):** added the missing
+**75 Antares.dll `cmp` cell-index bounds patches** (`cmp reg,0x3FFFF→0xFFFFF`
+×73 + `cmp …,0x40000→0x100000` ×2). This is Lead 3 from the previous handoff and
+the half of the Antares coverage the hybrid lacked — the **broad build has these
+and survives** the bottom-left crash (§2.17). All 75 expected byte-patterns were
+verified against the live `Antares.dll` (`…/RA2/Antares.dll`, ImageBase
+`0x10000000`) before shipping, so preflight should match. Also fixed a **latent
+stack-array overflow** in `apply_map512_patches`: `module_present[16]`/
+`module_applied[16]` are indexed by patch index but the table already had 75
+entries (now 150) → resized to `[256]`.
+- Prev build `8efc3e67` backup: `…/RA2/MapSizeExt.dll.pre-antarescmp.bak`.
+- **If it crashes on load / patches no-op:** check `yr_map_512_plane_probe.csv`
+  for `extension_patch_preflight_mismatch` — a single mismatch aborts ALL patches
+  (map breaks). Revert to the `.bak` and report the logged RVA.
+
+**IF THE CRASH PERSISTS (bottom-left still fatal):** the fallback is the untried
+Lead 1 — a **conditional wild-pointer guard on the `0x6601f1` singleton chain**
+(skip that object's tactical projection when `[[0x880A04]]`'s vtable is not in
+`.rdata`), analogous to the working `0x660540` guard. Deliberately NOT added yet
+so this test isolates whether the Antares cmp patches alone are the root cause.
+EIP `0x021B9CA4` (heap = virtual-call into garbage), coords ~(307,249). See §2.17.
 
 ## What we added to his source (all in `curated/`, documented in BUG-ATLAS M4)
 Patch table (`yr_map_512_patch_table.h`) additions on top of his 74:
