@@ -260,6 +260,44 @@ then carry over our plane-init/bounds coverage (adds 300×300). Best of both.
 - **Status:** excluded from `kCellStrideSites`. **The sidebar-brightness bug
   (§2.2) is very likely a 42nd site of this exact class.**
 
+### 2.11 Striped shroud / halved-coordinate reveal (Antares MapRevealer at 512)
+- **Symptom:** fog-of-war reveals in **stripes** (every other row); the initial
+  MCV reveal lands in the **top-right quarter** of the map regardless of map
+  size; as a unit moves, cells **cycle high/low** (alternating elevation), and
+  units on shrouded tiles render "high". Classic **halved-coordinate** signature:
+  a system reads/writes the cell plane at **stride 512** while it is 1024, so row
+  Y → row Y/2 (stripe) and X compresses into a quarter.
+- **Approach:** appears when **Antares.dll is not patched** — i.e. our broad
+  build with `PatchModules=0`, and the initial **CuratedBase** port (which skips
+  our Antares patches). Our broad build with `PatchModules=1` is clean.
+- **Root cause:** Antares.dll (open-source Ares reimplementation) contains the
+  MapRevealer / tactical reveal and compiles **YRpp `GetCellIndex = Y<<9 + X`**
+  and `MaxCells 0x40000` **inline**. Unpatched, its reveals index the plane at
+  stride 512.
+- **Fix (ours):** `ApplyAntaresPatches` — patch Antares.dll's inline `shl 9→0xA`
+  (~73 sites) + `MaxCells 0x40000→0x100000` (~75 `cmp`) **relative to
+  `GetModuleHandle("Antares.dll")`**. Also `ApplyModulePatches` for Phobos's own
+  inline stride. NO-OP at stride 512.
+- **NB — his base does NOT patch Antares yet works:** Krisztiaan's DLL has no
+  Antares patch but no stripe, because his **central-accessor hook /
+  invalid-axis rejection** makes Antares's stride-512 access resolve correctly.
+  We have not ported that hook; the pragmatic fix in CuratedBase mode is to keep
+  applying **our** Antares/Phobos patches (they carry no wall/sidebar false
+  positive — those live in the gamemd broad sweep, not the module patches).
+
+### 2.12 Compiled-hook vs curated-base interactions (CuratedBase mode)
+- **Observed in CuratedBase milestone 1:** his 74 patches + OUR compiled
+  `DEFINE_HOOK`s → maps load & play (250×250 AND 300×300) but **striped shroud**
+  (§2.11, Antares not applied) and **sidebar still bright**. His standalone DLL
+  (his 74 + HIS hooks, our hooks absent) has neither bug. Therefore the
+  **sidebar-brightness bug tracks OUR compiled hooks**, not the gamemd byte
+  sweep — a strong new lead for §2.2 (audit the always-on hooks:
+  operator[]/alloc/inline-access/lepton/IsCellValid and the render-adjacent
+  guards; one perturbs the cameo lighting multiplier).
+- **300×300 loads in CuratedBase** where his standalone DLL crashes (§2.5) →
+  **our alloc hooks `0x48EB12/0x48EB35` are (part of) the plane-sizing his base
+  lacks.** Keep them.
+
 ### 2.9 Subzone signedness / stack overflow on big maps
 - **Root cause:** 16-bit subzone IDs; ~14 `movsx` consumers sign-extend; values
   >`0x7FFF` go negative and `0x10000` truncates to `0` (="unvisited") → infinite

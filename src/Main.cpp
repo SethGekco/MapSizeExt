@@ -70,8 +70,14 @@ static void ApplyInit()
         {
             fprintf(f, "[mode] CuratedBase=1 -> Krisztiaan curated 74-patch conversion; broad sweep SKIPPED\n");
             ApplyCuratedBase(f);
-            // Compiled crash-guard hooks (operator[], GetCellAt guard, coord-transform
-            // guard, etc.) remain installed via .syhks00 and complement the curated set.
+            // His base handles Antares's stride-512 MapRevealer via his accessor
+            // hook (not yet ported); until then we still need OUR Antares/Phobos
+            // module patches or the shroud reveals in stripes (BUG-ATLAS 2.11).
+            // These carry no wall/sidebar false positive (that is in the gamemd
+            // broad sweep, which stays skipped).
+            ApplyModulePatches(f);
+            ApplyAntaresPatches(f);
+            // Compiled crash-guard hooks remain installed via .syhks00.
         }
         else
         {
@@ -96,6 +102,8 @@ static void ApplyInit()
         if (cfg.CuratedBase)
         {
             ApplyCuratedBase(nullptr);
+            ApplyModulePatches(nullptr);
+            ApplyAntaresPatches(nullptr);
         }
         else
         {
