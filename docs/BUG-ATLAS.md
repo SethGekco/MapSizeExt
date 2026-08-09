@@ -347,6 +347,27 @@ then carry over our plane-init/bounds coverage (adds 300×300). Best of both.
   is somewhere in the ~360 gamemd sites his 74 omits (and it is NOT the wall FP:
   broad builds foundations AND breaks walls).
 
+### 2.16 Coordinate wrap: bottom-right folds to top-left (inverse-conversion sign-extend)
+- **Symptom:** on a >512-coord map (300×300), units ordered to the **bottom-right
+  edge** route to the **top-left**; scrolling there produces a **virtual-call
+  fatal** — EIP in the heap (`0x021B9CA4`) with `EAX/ECX` = the target coords
+  (301/297). The wrapped coordinate yields a garbage cell/object whose vtable is
+  then called.
+- **How it is created:** raising the plane stride to 1024 requires patching the
+  **entire** inverse `index → (X,Y)` conversion, which is:
+  `X = ((index & 0x1FF) ^ 0xFFFFFE00-signext) ...`, `Y = index sar 9`. There are
+  FOUR site classes per conversion:
+  1. positive mask `and reg,0x1FF → 0x3FF`  (`0x565c88`,`0x566fa4`)
+  2. arithmetic shift `sar reg,9 → 0xA`      (`0x565c96`,`0x566fb2`)
+  3. modulo mask `and reg,0x800001FF → 0x800003FF` (`0x565c75`,`0x566f91`)
+  4. **sign-extension `or reg,0xFFFFFE00 → 0xFFFFFC00`** (`0x565c7e`,`0x566f9a`)
+  His 74 patch classes 1–3 but **miss class 4**. `0xFFFFFE00` sign-extends a
+  negative modulo at the **512** boundary; unpatched, coordinates in the upper
+  (extended) half sign-extend as if the axis were 512 wide → they wrap into the
+  low/upper-left region. Fix: patch `0x565c7e`/`0x566f9a` to `0xFFFFFC00`. (If the
+  garbage-object virtual call persists after the wrap fix, add our
+  `CoordTransform_NullSingleton_Guard` @`0x660540`, §2.6, as a safety net.)
+
 ### 2.9 Subzone signedness / stack overflow on big maps
 - **Root cause:** 16-bit subzone IDs; ~14 `movsx` consumers sign-extend; values
   >`0x7FFF` go negative and `0x10000` truncates to `0` (="unvisited") → infinite
@@ -447,6 +468,22 @@ then carry over our plane-init/bounds coverage (adds 300×300). Best of both.
   The plane is init'd (to 0/-1) for a count that covers ≤250×250 but not
   300×300. TODO: pin the plane-init count/stride in `MapClass_CTOR`
   (`0x565xxx`-`0x566xxx`); add it as one entry to his patch table.
+
+### M4 — build his source + walk the 300×300 crash chain (in progress, working)
+Building his source with local mingw and adding fixes on top. 300×300 now loads
+and plays; crash chain walked so far (each a permanent addition):
+1. **Plane-init `-1`** @`0x410174` → `Map512CellSlotGuard` hook @`0x5663BC`
+   (treat non-heap slot pointer as empty so the loop allocates fresh). §2.5.
+2. **Iterator end-pointer** — 27 `shl 0xB→0xC` sites his 74 lacked (0x568c1e … ).
+3. **Iterator walks into garbage** @`0x568C3B` → `Map512CellIteratorGuard` hook
+   @`0x578290` (stop on wild cell pointer, range `[0x400000,0x40000000)`; a
+   coord-identity variant over-stopped and must NOT be used). §2.4.
+4. **Coordinate wrap / garbage vtable** @heap → coord sign-extend `0x565c7e`,
+   `0x566f9a` (§2.16).
+Build: `i686-w64-mingw32-g++ -std=gnu++11 -shared -static-libgcc
+-Wl,--enable-stdcall-fixup -o MapSizeExt.dll yr_map_512_plane_probe.c -lpsapi`.
+Two guard hooks added in his `.syhks00`/`SyringeRegisters` style. Next: keep
+clearing edge/scroll crashes, then vendor this into the repo as the deliverable.
 
 ### Sidebar-brightness answer (see 2.14)
 Pinned to the shroud-buffer alloc hooks `0x48EB12/35`. His source doesn't have
