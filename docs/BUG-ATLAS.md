@@ -322,6 +322,31 @@ then carry over our plane-init/bounds coverage (adds 300×300). Best of both.
   **our alloc hooks `0x48EB12/0x48EB35` are (part of) the plane-sizing his base
   lacks.** Keep them.
 
+### 2.14 Sidebar-brightness pinned to the shroud-buffer alloc hooks (0x48EB12/35)
+- **Finding (curated M2b):** deferring only `MapClass_Alloc_Stride1/2`
+  (`0x48EB12/35`) — the shroud/visibility buffer alloc — makes the **sidebar
+  cameo brightness correct** (broad build, with these active at 1024, is bright).
+  So §2.2 is these hooks: their 1024 buffer sizing perturbs a shared draw/palette
+  buffer that the sidebar cameos read. **To fix sidebar in the broad build, fix
+  or defer `0x48EB12/35`** (they also caused the curated stripe — likely the same
+  over-sized buffer). Real fix TBD: size the buffer correctly without the side
+  effect.
+
+### 2.15 Building foundation stays 1-cell in curated mode (coverage his 74 lacks)
+- **Symptom (curated M2b):** even with operator[] `0x5656EA` and store
+  `0x483B32` active at 1024 and shroud clean, the **building foundation is
+  1-cell** (SHP overhangs footprint), MCV **deploy is unreliable**, and standard
+  maps still show **elevation cycling**. So multi-cell placement/occupancy and
+  cell-height read go through **another cell path** that is at 512 — one his 74
+  does not patch and our active hooks do not cover.
+- **Open question:** does his STANDALONE DLL build multi-cell foundations? If NO,
+  his approach lacks foundation coverage (only our broad sweep has it) → base on
+  the broad build. If YES, his HOOK (not yet ported) supplies it → finish porting
+  his hook. **This test decides the whole strategy.**
+- Note: our **broad build builds foundations fine** — so the foundation coverage
+  is somewhere in the ~360 gamemd sites his 74 omits (and it is NOT the wall FP:
+  broad builds foundations AND breaks walls).
+
 ### 2.9 Subzone signedness / stack overflow on big maps
 - **Root cause:** 16-bit subzone IDs; ~14 `movsx` consumers sign-extend; values
   >`0x7FFF` go negative and `0x10000` truncates to `0` (="unvisited") → infinite
