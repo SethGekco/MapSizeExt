@@ -117,9 +117,20 @@ int ApplyStridePatches(FILE* log)
 
     if (shift == 9) return 0;  // stride 512: nothing to do
 
-    int patched = 0;
+    if (log && g_StrideSkipTo > g_StrideSkipFrom)
+        fprintf(log, "[stride] BISECT: skipping site indices [%d, %d) of %d\n",
+                g_StrideSkipFrom, g_StrideSkipTo, count);
+
+    int patched = 0, skippedBisect = 0;
     for (int i = 0; i < count; ++i)
     {
+        // Bisection hunt for the wall false positive: leave these indices at 512.
+        if (i >= g_StrideSkipFrom && i < g_StrideSkipTo)
+        {
+            ++skippedBisect;
+            if (log) fprintf(log, "[stride] BISECT-SKIP [%d] 0x%06X\n", i, kCellStrideSites[i]);
+            continue;
+        }
         const DWORD va  = kCellStrideSites[i];
         const BYTE  op  = *reinterpret_cast<BYTE*>(va);        // expect 0xC1
         const BYTE  mod = *reinterpret_cast<BYTE*>(va + 1);    // E0..E7

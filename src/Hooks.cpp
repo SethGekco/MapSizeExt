@@ -30,6 +30,8 @@
 int g_MapStride       = 512;
 int g_MapTotal        = 262144;  // 512 * 512
 int g_CrashGuard      = 1;       // GetCellAt garbage-slot guard (INI PatchCrashGuard)
+int g_StrideSkipFrom  = 0;       // bisection: skip kCellStrideSites [from,to)
+int g_StrideSkipTo    = 0;
 int g_MapMaxW         = 512;
 int g_MapMaxH         = 512;
 int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)

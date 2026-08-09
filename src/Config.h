@@ -47,6 +47,11 @@ struct MapSizeConfig
     // Our compiled crash-guard hooks and 300x300 size-extension stay active.
     int CuratedBase;
 
+    // Bisection hunt for the wall false positive: leave kCellStrideSites indices
+    // [StrideSkipFrom, StrideSkipTo) at 512. Edit via INI, no rebuild per step.
+    int StrideSkipFrom;
+    int StrideSkipTo;
+
     int Total() const { return Stride * Stride; }
 };
 
@@ -84,6 +89,8 @@ inline MapSizeConfig ReadConfig()
     cfg.PatchRadar     = GetPrivateProfileIntA("Debug", "PatchRadar",     1, iniPath);
     cfg.PatchIso       = GetPrivateProfileIntA("Debug", "PatchIso",       0, iniPath);
     cfg.CuratedBase    = GetPrivateProfileIntA("Debug", "CuratedBase",    0, iniPath);
+    cfg.StrideSkipFrom = GetPrivateProfileIntA("Debug", "StrideSkipFrom", 0, iniPath);
+    cfg.StrideSkipTo   = GetPrivateProfileIntA("Debug", "StrideSkipTo",   0, iniPath);
 
     // Clamp: never go below the vanilla values.
     if (cfg.Stride       < 512) cfg.Stride       = 512;
