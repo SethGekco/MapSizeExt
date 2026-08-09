@@ -400,6 +400,14 @@ then carry over our plane-init/bounds coverage (adds 300×300). Best of both.
   extension his base lacks, i.e. the 300×300 enabler), and the crash guards
   (§2.6/2.7). Subzone ceiling switches to `0xFFFE` in curated mode (his movzx).
   Goal: reproduce his clean walls+buildings+shroud, then verify 300×300.
+- **M2b (correction):** M2 over-deferred. Result of deferring all four:
+  **shroud fully clear** (stripe gone) BUT building foundation went **1-cell**
+  (SHP overhangs) and standard maps got the elevation bug. So: only the
+  **shroud-buffer alloc hooks `0x48EB12/35` defer** in curated mode (their 1024
+  sizing was the stripe); the cell-access/store hooks **`0x5656EA` and
+  `0x483B32` stay active at 1024** (foundation + elevation need them). The
+  standard-vs-large split (standard buggier) is unexplained but consistent with a
+  registration-stride mismatch that only bit small maps.
 - **M3 (next):** confirm/repair 300×300 in curated mode (dim-gate hooks should
   carry it; if the plane-init garbage §2.5 recurs, add that one patch).
 

@@ -150,7 +150,8 @@ static void DumpVisibleCellsLighting()
 
 DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 {
-    if (g_CuratedBase) return 0;   // his 74 leave 0x5656EA at 512; defer to it
+    // NOTE: needed at 1024 even in curated mode -- deferring it (M2) broke the
+    // multi-cell building foundation (1-cell) and standard-map elevation.
     int y = R->EAX<int>();
     int x = R->ECX<int>();
     int index = y * g_MapStride + x;
@@ -212,7 +213,9 @@ DEFINE_HOOK(48EB35, MapClass_Alloc_Stride2, 5)
 // ============================================================
 DEFINE_HOOK(483B32, MapClass_InlineAccess_Stride, 6)
 {
-    if (g_CuratedBase) return 0;   // his 74 leave 0x483B32 at 512; defer to it
+    // NOTE: needed at 1024 even in curated mode -- this is a cell-store; at 512
+    // it registers foundation cells wrong (1-cell building). Only the shroud-
+    // buffer alloc hooks 0x48EB12/35 defer in curated mode (they caused the stripe).
     R->EDI(R->EDI<int>() * g_MapStride);                    // shl edi,0x9
     *reinterpret_cast<int*>(R->ESI() + 0xFC) = R->EBX();    // mov [esi+0xfc],ebx
     DumpMapStateOnce();                                     // diagnostic (once)
