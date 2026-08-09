@@ -66,6 +66,15 @@ static void ApplyInit()
                 cfg.PatchStride, cfg.PatchBounds, cfg.PatchBoundsCmp, cfg.PatchRootWH, cfg.PatchModules, cfg.PatchCoord, cfg.PatchGuard);
         fprintf(f, "IsoMapPack5 buffer patched to %ux%u (%u bytes)\n",
                 isoW, isoH, isoBytes);
+        if (cfg.CuratedBase)
+        {
+            fprintf(f, "[mode] CuratedBase=1 -> Krisztiaan curated 74-patch conversion; broad sweep SKIPPED\n");
+            ApplyCuratedBase(f);
+            // Compiled crash-guard hooks (operator[], GetCellAt guard, coord-transform
+            // guard, etc.) remain installed via .syhks00 and complement the curated set.
+        }
+        else
+        {
         if (cfg.PatchStride)  ApplyStridePatches(f); else fprintf(f, "[stride]  DISABLED via INI\n");
         if (cfg.PatchStride)  ApplyCellArrayPopulationStride(f); else fprintf(f, "[cellpop] DISABLED via INI\n");
         if (cfg.PatchBounds)  ApplyBoundsPatches(f, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0); else fprintf(f, "[bounds]  DISABLED via INI\n");
@@ -79,10 +88,17 @@ static void ApplyInit()
         if (cfg.PatchGuard)   ApplyGuardPatches(f);   else fprintf(f, "[guard]   DISABLED via INI\n");
         if (cfg.PatchAdjacency) ApplyAdjacencyPatch(f); else fprintf(f, "[adj]     DISABLED via INI\n");
         if (cfg.PatchIso)     ApplyIsoPatches(f);     else fprintf(f, "[iso]     DISABLED via INI\n");
+        }
         fclose(f);
     }
     else
     {
+        if (cfg.CuratedBase)
+        {
+            ApplyCuratedBase(nullptr);
+        }
+        else
+        {
         if (cfg.PatchStride)  ApplyStridePatches(nullptr);
         if (cfg.PatchStride)  ApplyCellArrayPopulationStride(nullptr);
         if (cfg.PatchBounds)  ApplyBoundsPatches(nullptr, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0);
@@ -96,6 +112,7 @@ static void ApplyInit()
         if (cfg.PatchGuard)   ApplyGuardPatches(nullptr);
         if (cfg.PatchAdjacency) ApplyAdjacencyPatch(nullptr);
         if (cfg.PatchIso)     ApplyIsoPatches(nullptr);
+        }
     }
 }
 

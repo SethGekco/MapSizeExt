@@ -41,6 +41,12 @@ struct MapSizeConfig
     int PatchRadar;       // radar/minimap surface resize 512->1024 (Krisztiaan handoff)
     int PatchIso;         // EXPERIMENTAL tactical-render iso cell sites (default 0)
 
+    // CuratedBase=1 applies Krisztiaan's 74-patch curated conversion instead of
+    // our broad inline sweep (avoids the broad-sweep false-positive class that
+    // gives us the wall-connect + sidebar-brightness bugs). See docs/BUG-ATLAS.md.
+    // Our compiled crash-guard hooks and 300x300 size-extension stay active.
+    int CuratedBase;
+
     int Total() const { return Stride * Stride; }
 };
 
@@ -77,6 +83,7 @@ inline MapSizeConfig ReadConfig()
     cfg.PatchSubzone   = GetPrivateProfileIntA("Debug", "PatchSubzone",   1, iniPath);
     cfg.PatchRadar     = GetPrivateProfileIntA("Debug", "PatchRadar",     1, iniPath);
     cfg.PatchIso       = GetPrivateProfileIntA("Debug", "PatchIso",       0, iniPath);
+    cfg.CuratedBase    = GetPrivateProfileIntA("Debug", "CuratedBase",    0, iniPath);
 
     // Clamp: never go below the vanilla values.
     if (cfg.Stride       < 512) cfg.Stride       = 512;

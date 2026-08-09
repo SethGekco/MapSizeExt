@@ -61,6 +61,7 @@
     <ClCompile Include="src\Main.cpp" />
     <ClCompile Include="src\Hooks.cpp" />
     <ClCompile Include="src\Patches.cpp" />
+    <ClCompile Include="src\CuratedBase.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\MapSizeExt.h" />

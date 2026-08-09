@@ -82,3 +82,8 @@ int ApplyIsoPatches(FILE* log);
 // Forces the safe DisplayClass render path at 0x657CF0 (avoids the Ares
 // +0x7C override that dereferences the never-initialized 0x880A04).
 int ApplyGuardPatches(FILE* log);
+
+// Applies Krisztiaan's curated 74-patch map-512 conversion (+14 subzone movzx,
+// +2 Phobos), the false-positive-free alternative to our broad inline sweep.
+// Used when [Debug] CuratedBase=1. See src/CuratedBase.cpp and docs/BUG-ATLAS.md.
+int ApplyCuratedBase(FILE* log);
