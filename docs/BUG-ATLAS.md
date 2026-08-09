@@ -1,0 +1,328 @@
+# MapSizeExt — Bug Atlas & Reverse-Engineering Knowledge Base
+
+Target: **Yuri's Revenge 1.001**, 32-bit `gamemd.exe` /
+`gamemd-spawn.exe` (CnCNet spawner). Pinned analysis SHA-256
+`3e81a617…d308600`. Goal: nominal 512×512 maps on a **1024×1024 internal
+pointer plane** (raise cell stride 512→1024).
+
+This document records, in detail, every bug we have characterised, its exact
+mechanism and addresses, its symptom, which implementation approach exhibits it,
+and the fix (or fix direction). It is the map for pinpointing the next bug fast.
+
+Two independent implementations exist and their bug profiles are **complementary**
+— that split is the single most useful diagnostic fact we have.
+
+---
+
+## 0. The two approaches (why the bug profiles differ)
+
+### Ours — MapSizeExt (broad inline byte-patch sweep)
+- ~**435** `shl reg,9 → shl reg,0xA` inline cell-index sites.
+- ~**438** auto-scanned `cmp/push …,0x40000 → 0x100000` bounds sites.
+- Plus: cell-population row stride, coord inverse-conversion, adjacency table,
+  cell-iterator byte-stride (32 sites), subzone scale/saturation, overlay/radar
+  surface, Antares/Phobos module patches, and a set of compiled `DEFINE_HOOK`
+  guards.
+- **Strength:** broad coverage → **loads 300×300** and larger.
+- **Weakness:** broad sweeps are **false-positive-prone**. A `shl 9` or
+  `cmp 0x40000` that is *not* a cell index (palette row pointer, 256 KB buffer
+  size, bitfield) gets rewritten and corrupts an unrelated subsystem. We have
+  already had to hand-exclude 41 such sites (see §2.8). The **wall** and
+  **sidebar-brightness** bugs are almost certainly one or two more of the same
+  class that we have not yet isolated.
+
+### His — Krisztiaan's `yr_map_512_plane_probe` (curated hook-based)
+- Only **74** exact byte patches, generated from per-subsystem manifests
+  (owner-core 30, pathfinding 6, subzone-scale 17, overlay-load 7, IsoMapPack5 2,
+  visibility/shroud 10, veinhole 2).
+- **Hooks the central cell accessor** + delayed activation at MapClass init,
+  unsigned-subzone consumers + producer ceiling, iterator phase-switching.
+- **Strength:** no broad sweep → **no false positives**. Walls connect, sidebar
+  lighting correct, radar works, movement correct, all corners reachable.
+- **Weakness:** curated for **≤250×250**. Crashes constructing a 300×300 map
+  (see §2.5) — a plane-init/bounds site his set doesn't cover but ours does.
+- Handoff: `~/Desktop/Krisztiaan Map Proj/yr-map512-solution-author-handoff-20260804/`
+  (source `source/yr_map_512_plane_probe.c`, table `source/yr_map_512_patch_table.h`,
+  manifests, evidence-notes, and two DLLs in `bin/`). His DLL host-check accepts
+  the CnCNet spawner (`CNCNET_SPAWNER_IMAGE_SIZE`, file 4,813,072 bytes) so it
+  activates on Rex's `gamemd-spawn.exe`.
+
+### The complementary table
+
+| Behaviour | His curated base | Our broad sweep |
+|---|---|---|
+| Player-built walls connect | ✅ clear | ❌ **wall bug** (§2.1) |
+| Sidebar cameo lighting | ✅ clear | ❌ **brightness bug** (§2.2) |
+| Radar / satellite minimap | ✅ works | ✅ works (§2.3) |
+| Unit pathfinding (slopes/water/harvesters) | ✅ works | ✅ works, we own the fix (§2.4) |
+| Load & play 300×300 | ❌ **plane-init crash** (§2.5) | ✅ works |
+
+**Plan:** rebuild MapSizeExt on his curated base (kills wall + sidebar bugs),
+then carry over our plane-init/bounds coverage (adds 300×300). Best of both.
+
+---
+
+## 1. Memory / structure reference (verified this session)
+
+**Cell accessors**
+- `0x5656EA` `MapClass::operator[](CellStruct&)` — `shl eax,9` then bounds. (our HOOK)
+- `0x5657A0` `operator[](CellStruct&)` variant used by wall producers.
+  `shl eax,9` @`0x5657AC`, capacity guard `cmp eax,0x40000` @`0x5657B4`,
+  reads `Cells.Items` at `[ecx+0x13C]`. **Both his and our patches identical here.**
+- `0x565757` unchecked pointer-plane helper (`shl edx,9`).
+- `0x5657F1` `IsCellValid` (`shl edx,9`).
+- `0x565730` `GetCellAt(lepton)` → cell index.
+
+**Cell array / MapClass**
+- `Cells.Items` (pointer plane, `CellClass*[]`) at **`[MapClass+0x13C]`**.
+- Static base pointer read site `ds:0x87F924` (399 refs).
+- MapClass instance `0x87F7E8`.
+- Plane W/H publish `0x565812` (`mov eax,0x200`→1024). MaxNumCells
+  `0x565828` (`0x40000`→`0x100000`). Destruction/reserve bounds
+  `0x565B73`/`0x565B87`.
+- Cell-pointer-array **population** row stride `0x566437`
+  (`add ecx,0x200`→`0x400`). Without it Items[] is filled at Y·512+X while
+  reads use Y·1024+X → null cells → can't deploy/move.
+
+**CellClass fields**
+- MapCoords.X `+0x24` (word), MapCoords.Y `+0x26` (word).
+- Overlay index `+0x44` (int, `-1`/`0xFFFFFFFF` = none).
+- Height/level `+0x11B` (sbyte), SlopeIndex `+0x11C` (byte).
+- **Wall/overlay frame (OverlayData) `+0x11E`** (byte) — the connection bitmask.
+- Pixel/draw rect fields `+0x108/+0x10A/+0x10C/+0x10E` (computed @`0x484xxx`,
+  fixed-point `imul … ; sar 0x10`, clamp `0x7D0`). **NB:** `+0x10A` is a *draw
+  coordinate*, not the frame — do not confuse with `+0x11E`.
+
+**Overlay / wall drawing & connection**
+- Draw dispatch: PATH 1 `0x47F908` (SlopeIndex/terrain-following overlays),
+  PATH 2 `0x47F96A` (`OverlayType+0x2A8` wall-flag → connection draw).
+- Frame producers (all coord-based, verified stride-correct): `0x485390`
+  (loops N/E/S/W via table+lookup, returns bitmask), `0x481810`
+  (get-neighbour helper), `0x47E044` (writes `+0x11E`).
+- **Neighbour coord table `0x89F688`** — 8 × `{Xword,Yword}` deltas
+  (`N{0,-1} NE{1,-1} E{1,0} SE{1,1} S{0,1} SW{-1,1} W{-1,0} NW{-1,-1}`).
+  **Built at runtime @`0x49F2F0`**, pure coordinate deltas → stride-independent,
+  never patched.
+- Wall-placement neighbour-notify + frame write: `0x485460`-region,
+  `+0x11E` writes at `0x485760`/`0x48593D`.
+- Sprite picker `0x45F160` (no stride math).
+- 8-neighbour **cell-index** offset table `0x7E3774`
+  (`[-512,-511,+1,+513,+512,+511,-1,-513]`) — used by the flood/zone walk at
+  `0x429xxx`. We rewrite to 1024 offsets; his pathfinding manifest patches the
+  same 6 row-crossing entries (leaving the two horizontals ±1). **Equivalent.**
+
+**Iterator / passability / zones**
+- Full-map cell iterator `0x578290`; per-cell op = `CellClass::UpdatePassability`
+  `0x486A70`.
+- Byte-offset form uses `shl reg,0xB` (rows·512·4 = rows<<11) + diagonal step
+  `lea [reg-0x7FC]`.
+- Dynamic diamond stride variable **`ds:0x89C2DC` = (Width+Height+1)**, written
+  once @`0x42AC60`, read 163× as `imul <Ycoord>` — this grid **auto-scales** to
+  any map, needs no patch. Its neighbour offsets `0x89A304` family.
+
+**Subzones**
+- 16-bit IDs in `[MapClass+0x6C]`/`[+0x70]`; producer @`0x58215B`;
+  recompute/overflow @`0x5824A0`.
+
+**Coord transform / crash-prone singletons**
+- `ds:0x880A04` coord-transform singleton, read by the `0x660540` family;
+  garbage at stride>512.
+
+**Overlay-load / radar surface**
+- `ScenarioClass::LoadOverlayPacks` @`0x5FD2E0` (owns the temporary decode
+  surface + the OverlayPack/OverlayDataPack row traversals).
+
+**300×300 crash chain**
+- Sub-object CTOR `0x410170` (writes vtable to `[this+8]`), CellClass CTOR
+  `0x47BBF0` (returns to `0x47BBFB`), construction loop `0x56634E`-`0x566432`
+  in MapClass setup (return `0x566401`).
+
+---
+
+## 2. Bug atlas
+
+### 2.1 Player-built walls don't connect (vertical/N–S specifically)
+- **Approach:** OURS has it. **His base is clear.**
+- **Symptom:** walls you build in-game (NAWALL, overlay **102**; also 27) draw as
+  isolated posts — horizontal (E/W) joints register, vertical (N/S) don't.
+  Map-*placed* walls (overlay **241/204**) connect fine because their `+0x11E`
+  frames load from the map file, not computed live.
+- **Diagnosis performed (all negative — code is correct):**
+  - `+0x11E` frame is the connection bitmask; per-overlay frame-vs-neighbour
+    reconstruction from the draw probe: 204 = 18/18 match, 241 = 34/38, but
+    **102 = 6/51** and 27 = 0/9; bit-to-direction brute force showed 102's E/W
+    bits track E/W but **N/S bits are garbage**.
+  - Producers `0x485390`/`0x481810`/`0x47E044`, table `0x89F688`, lookup
+    `0x5657A0`, sprite picker `0x45F160` — **all verified stride-correct**.
+  - Runtime caller probe on `0x5657A0` (gated to the build area) caught only a
+    redraw scan (callers `0x47DB96`-`0x47DCED`) with **correct** indices — the
+    live frame producer for 102 does **not** funnel through `0x5657A0`.
+  - Ruled out by INI toggle / evidence: `PatchCoord`, `PatchAdjacency`,
+    `PatchModules`, `PatchSubzone`, `PatchBoundsCmp`, `PatchIterator`,
+    `CellIterator_OOBGuard` (fired 0×). **Culprit is inside the load-bearing
+    core (435 `shl` sweep or `cmp 0x40000` scan), which can't be toggled off to
+    bisect.**
+- **Root cause (class):** a **false positive in our broad sweep** — a `shl 9` /
+  `cmp 0x40000` that is not a cell index. His accessor-hook design never patches
+  those sites, so his walls are clean. Exact site not yet isolated.
+- **Fix direction:** adopt his curated/hook base (removes the whole class). If
+  staying on the sweep, binary-search the 435 sites by building variants that
+  swap site-groups to his values.
+
+### 2.2 Sidebar cameo brightness
+- **Approach:** OURS has it. **His base is clear** (confirmed in-game).
+- **Symptom:** sidebar build cameos render too bright.
+- **Root cause (class):** same as §2.1 — a broad-sweep false positive, here on
+  the **palette/lighting** path (cameos are SHP draws with a lighting multiplier).
+  Related known-excluded sites in §2.8. Strong hypothesis: one more palette-row
+  `shl 9` we have not excluded.
+- **Fix direction:** same as §2.1 (his base avoids it). Or find the specific
+  palette-row FP and exclude it.
+
+### 2.3 Radar / satellite minimap not rendering — FIXED (full detail)
+- **Approach:** both work when the 7 patches are present. His base has them.
+- **Root cause:** at stride>512 the radar/overlay decode **surface is never
+  created** — the decode surface is 640×400 and the row-traversal dimension gates
+  compare against `0x200` (512), which fail past 512.
+- **Fix (7 sites, `ScenarioClass::LoadOverlayPacks`):**
+  | addr | change | meaning |
+  |---|---|---|
+  | `0x5FD2FD` | push `0x190`→`0x320` | surface height 400→800 |
+  | `0x5FD302` | push `0x280`→`0x500` | surface width 640→1280 |
+  | `0x5FD31C` | push `0x7D000`→`0x1F4000` | backing bytes |
+  | `0x5FD509` | `cmp esi,0x200`→`0x400` | OverlayPack X traversal |
+  | `0x5FD516` | `cmp edi,0x200`→`0x400` | OverlayPack Y traversal |
+  | `0x5FD647` | `cmp esi,0x200`→`0x400` | OverlayDataPack X traversal |
+  | `0x5FD650` | `cmp edi,0x200`→`0x400` | OverlayDataPack Y traversal |
+- **NOTE:** these were mislabeled "radar" in early MapSizeExt code (`ApplyRadarPatches`/
+  `kRadar`). They are Krisztiaan's **overlay-load** patches. Rename on port.
+- **Save/load caveat:** 5 iterator sites (`0x5782BD/578321/578375/57847B/578482`)
+  must be **stock** during the post-load rebuild (`sub_685120` @`0x68512B`, after
+  `TabClass::Init_IO` @`0x67E694`) — his approach handles this via iterator
+  phase-switching.
+
+### 2.4 Unit pathfinding — walk-on-water / can't path — FIXED (full detail)
+- **Approach:** both work when the iterator is patched. His base works.
+- **Root cause:** the full-map passability/movement-zone recompute is driven by
+  the cell iterator `0x578290` (per-cell `UpdatePassability` `0x486A70`). It
+  encodes the row stride in the **byte-offset form** `shl reg,0xB` (rows·512·4)
+  and steps diagonally with `lea [reg-0x7FC]`. Left at 512, the walk visits the
+  wrong cells → units treat water/slopes as passable/impassable wrongly.
+- **Fix (ours):** 32 × `shl 0xB`→`0xC` (row byte-stride) + step
+  `-0x7FC`→`-0xFFC`; plus `CellIterator_OOBGuard` @`0x578290` (cell-identity
+  guard: a real cell at slot N has coords `(N%stride, N/stride)`; on mismatch
+  return null → clean loop termination instead of walking off the array).
+- **Fix (his):** 5 iterator step sites + runtime **phase-switching** (patch on
+  for the walk, stock during post-load rebuild).
+
+### 2.5 300×300 map fatal crash (plane-init garbage) — HIS base has it
+- **Approach:** HIS base crashes. **Ours is clear** (loads 300×300).
+- **Crash:** `C0000005 @0x00410174`, `EAX=0xFFFFFFFF`, `EBX=0x87F7E8`,
+  `EDI=0x440F5` (cell index 278,773), map dim `0x12C`=300 on stack. Chain:
+  construction loop `0x566401` → CellClass CTOR `0x47BBF0`→ sub-CTOR `0x410170`
+  writes vtable to `[0xFFFFFFFF+8]`.
+- **Mechanism:** construction loop `0x56634E`-`0x566432` reads
+  `plane[edi]` (`0x5663BC`); if **non-zero** it constructs onto that pointer, if
+  zero it allocates a fresh `0x148`-byte cell. For cell `0x440F5` (row 272) the
+  slot holds uninitialised **`0xFFFFFFFF`** → constructs onto `-1`. The pointer
+  plane is **not zero-initialised far enough** for the 300×300 cell range.
+- **Key fact:** his and our **dimension patches are byte-identical** (`0x565812`
+  →1024, `0x565828`→`0x100000`, `0x565B73/B87`→`0x100000`). So the ceiling is
+  **not** the obvious size patch — it's a **plane-init / zero-fill / bounds site**
+  in the alloc/setup path (plane pointer stored at `[MapClass+0x13C]`; live plane
+  seen at `0x12B30020`). Our broad sweep covers it; his 74 don't.
+- **Fix:** carry over our plane-init/bounds coverage. **TODO:** pin the exact
+  site (in the plane alloc/zero path near the `0x13C` write in the main CTOR).
+
+### 2.6 Coord-transform crash on unit spawn/build — FIXED
+- **Symptom:** building infantry / attack-dog → AV, EIP `0x07Cxxxxx`, signature
+  `EBX=0x8809F4`, coords ~168/110.
+- **Root cause:** coord-transform singleton `ds:0x880A04` holds garbage at
+  stride>512; `0x660540` does `mov ecx,[0x880A04]; mov esi,[ecx]; call [esi+0x78]`
+  → virtual call into heap junk.
+- **Fix:** `CoordTransform_NullSingleton_Guard` @`0x660540` — at stride>512 skip
+  unconditionally (result feeds only sync-checksum logging, never gameplay;
+  `eax=0` is a harmless logged value; return the bare `ret` at `0x66053A`).
+
+### 2.7 Flying-unit (HunterSeeker) crash — FIXED
+- **Symptom:** AV `0x4CDD5F`, garbage `0x465F5445` ("ET_F").
+- **Root cause:** `GetCellAt` returns non-null **garbage** cell pointers from the
+  never-populated iso-diamond corners of the array.
+- **Fix:** `GetCellAt_GarbageGuard` @`0x565766` — cell-identity check gated on
+  `g_MapStride>512 && g_CrashGuard`.
+
+### 2.8 Lighting / black objects (false-positive class) — EXCLUDED
+- **Symptom when wrong:** black voxels/objects, crash `0x548DB1` on cliff maps.
+- **Root cause:** **41** `shl reg,9` sites that are **palette-remap row pointers**,
+  not cell indices. Tell: the value is clamped to `[0,254]` (`cmp reg,0xFE`) then
+  `×512` (a 256-colour WORD row) + a table base = a remap-row pointer. Sites:
+  `0x547DC7` + 40 SHP-drawer sites `0x493CF1`-`0x499ADC`. Patching → black/crash.
+- **Status:** excluded from `kCellStrideSites`. **The sidebar-brightness bug
+  (§2.2) is very likely a 42nd site of this exact class.**
+
+### 2.9 Subzone signedness / stack overflow on big maps
+- **Root cause:** 16-bit subzone IDs; ~14 `movsx` consumers sign-extend; values
+  >`0x7FFF` go negative and `0x10000` truncates to `0` (="unvisited") → infinite
+  region recursion `RecalculateSubZonesPass` `0x5824A0` → stack overflow.
+- **His fix (better):** 14× `movsx`→`movzx` (unsigned) + producer ceiling
+  saturating at `0xFFFE`, reserving `0xFFFF`. Full namespace.
+- **Our fix (shortcut):** producer cap `0x7FFF` at hook `0x58215B`
+  (`Subzone_SaturateID`) — keeps `movsx` positive but **halves** the namespace;
+  wall-heavy / large maps can exhaust it. Adopt his unsigned approach on port.
+
+---
+
+## 3. Diagnostic playbook (how to pinpoint next time)
+
+1. **512-vs-1024 A/B.** Set `[MapSize] Stride=512` → every patch/hook becomes a
+   no-op → pure vanilla baseline. If the bug persists at 512 it is NOT MapSizeExt
+   (another injected DLL — Rex's stack also loads Antares, Phobos, Kratos,
+   GiftBoxHost, etc.). If it only appears at 1024 it is our patching.
+2. **His-DLL oracle.** Swap in `bin/yr_map_512_plane_probe_74_static-only.dll` as
+   `MapSizeExt.dll` (host-check passes on the spawner). If the bug is absent under
+   his build, it is a **broad-sweep false positive** on our side → the fix is to
+   avoid patching that site (his curated set is the "known-good" allow-list).
+   His build is only safe **≤250×250**; use it as a *correctness* reference, not
+   a size reference.
+3. **Category bisect by INI toggle** (rules a category in/out without a rebuild):
+   `PatchCoord`, `PatchAdjacency`, `PatchModules`, `PatchSubzone`,
+   `PatchBoundsCmp`, `PatchIterator`, `PatchCrashGuard`. Note: some logic lives in
+   compiled `DEFINE_HOOK`s that INI does **not** gate (e.g. `Subzone_SaturateID`,
+   `CellIterator_OOBGuard`, the coord/GetCellAt guards) — gate them if you need
+   them in the bisect.
+4. **Runtime probes.** `DEFINE_HOOK` → `DeployDiagLog` (writes
+   `MapSizeExt_deploy.log`, capped, gated on `g_MapStride>512`). Log cell coords
+   `+0x24/+0x26`, overlay `+0x44`, frame `+0x11E`, and hook the shared lookup
+   `0x5657A0` to capture caller + requested coords. Reconstruct layout in Python:
+   compare stored `+0x11E` bitmask to actual neighbour occupancy → wrong frames =
+   producer fault; correct frames + bad visuals = draw fault.
+5. **Crash triage.** Read `debug/snapshot-*/except.txt`; symbolise the stack
+   against §1. Watch for stale week-old snapshot dirs (they have no `except.txt`).
+   `EAX/this = 0xFFFFFFFF` = uninitialised-plane construct; `0x07xxxxxx` EIP =
+   garbage vtable (coord-transform / garbage-cell class).
+
+---
+
+## 4. Build / deploy reference
+- Repo `/home/rex/MapSizeExt`, branch `fix/phase1-correctness`.
+- Build: push → GitHub Actions **MSBuild** (`.syhks00` Syringe hooks need MSVC;
+  mingw won't link them) ~40 s. `gh run download`, install DLL to
+  `~/snap/cncra2yr/common/.wine/drive_c/Westwood/RA2/MapSizeExt.dll`.
+- Injection: Syringe `-i=MapSizeExt.dll` (host `gamemd-spawn.exe`, 4,813,072 B).
+  Swapping the file swaps the implementation under that injection name.
+- Config: `MAPSIZEEXT.INI` `[MapSize] Stride/MaxDimension`, `[Debug] Patch*`.
+  Always confirm the top of `MapSizeExt.log` says `Stride = 1024` — the INI has
+  silently reverted to 512 before and made everything a confusing no-op.
+- His handoff dir (source/table/manifests/DLLs/notes):
+  `~/Desktop/Krisztiaan Map Proj/yr-map512-solution-author-handoff-20260804/`.
+
+---
+
+## 5. Port plan (his base → MapSizeExt) — in progress
+1. Replace the broad `shl`/`cmp` sweep with his **74-patch table** +
+   **accessor-hook activation** (`0x565812`), unsigned-subzone consumers +
+   `0xFFFE` ceiling, iterator **phase-switch**. → fixes walls + sidebar + gives
+   correct radar/movement.
+2. **Add** our plane-init/bounds coverage for **300×300+** (§2.5 TODO: pin site).
+3. Rename `ApplyRadarPatches`/`kRadar` → overlay-load (they are §2.3).
+4. Keep INI-configurable; keep the crash guards (§2.6/2.7) as belt-and-braces.
