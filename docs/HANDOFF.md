@@ -73,6 +73,58 @@ base.** Two bugs remain:
    (`CellClass_AttachesToNeighbourOverlay` 0x480534) works; the GuardRange
    straight-line auto-fill between two placed wall sections does not at 1024.
 
+### ★ WALL LINE-FILL ROOT-CAUSE TRACE (2026-08-10) — biggest progress ever on walls
+The line-fill is **reimplemented in Antares** as `BuildingExt::buildLines`
+(`Antares-src/src/Ext/Building/Body.cpp:350`; PDB S_PUB32 seg1:0x173D0). It:
+- `maxLinkDistance = Type->GuardRange / 256` (leptons→cells);
+- for each of 4 straight dirs, steps `cellToCheck += GetNeighbourOffset(dir)` up to
+  maxLinkDistance, `TryGetCellAt` each, looking for a linkable building; then fills
+  the gap with `GetCellAt` + `CreateObject` + `Unlimbo(Cell2Coord(cell))`.
+- **The cell math is YRpp**: `MapClass::GetCellIndex = (Y<<9)+X` and
+  `MaxCells=0x40000` (`YRpp/MapClass.h:214,147`) — hardcoded **stride 512**, inlined
+  into Antares.dll. `GetNeighbourOffset` reads the coord table `0x89F688`
+  (stride-independent, OK). `Cell2Coord` is coord-based (OK).
+- **ALL of buildLines' cell/coord math is CONFIRMED stride-correct at 1024:**
+  - `TryGetCellAt`/`GetCellAt`: Antares inline pattern `shl 9; add X; cmp 0x3ffff;
+    ja null; [MapClass 0x100e1014][+0x13c][idx*4]` — the `shl 9` is one of the 73
+    (all patched→0xA) and the `cmp 0x3ffff` is patched→0xfffff. (The 3 `shl 0xB` are
+    FP float/bitpack FPs, not cell byte-offsets. Shroud uses the same and works.)
+  - `GetNeighbourOffset` = coord table `0x89F688` (stride-independent).
+  - `Cell2Coord` = `X*256+128,Y*256+128`; `Coord2Cell` = `/256` (YRpp CellClass.h,
+    stride-independent).
+  - The `CanThisExistHere` Antares hook (`Hooks.Gates.cpp:22` @0x47C8AB) only reads
+    already-resolved cell fields (`OverlayTypeIndex`, `OverlayData`) — no stride math.
+- **So the line-fill SHOULD work at 1024, yet doesn't → only 2 runtime causes left,
+  a probe must decide:**
+  1. **buildLines is not invoked at 1024** — Antares calls it from DEFINE_HOOKs at
+     gamemd `0x445355` (KickOutUnit_Firewall) and `0x4FB257` (UnitFromFactory_Firewall).
+     If a MapSizeExt byte-patch lands on those 6 stolen bytes it corrupts Antares'
+     hook → no buildLines → no fill. **CHECK FIRST: does broad/curated patch any
+     site in `0x445355..0x44535A` or `0x4FB257..0x4FB25C`?** (cheap, static).
+  2. **the gamemd body of `CanThisExistHere` (0x47Cxxx)** has a stride site the sweep
+     missed, wrongly rejecting the empty intermediate cells → check loop breaks →
+     linkLength 0 → no fill.
+- **BOTH static causes RULED OUT:** (1) neither build patches the hook bytes
+  `0x445355`/`0x4FB257` (gamemd there is `mov [reg+0x520]`, no shl/cmp) → buildLines
+  IS invoked. (2) `CanThisExistHere` region `0x47C6xx-0x47CBxx` has NO shl-9/cmp-0x40000
+  → no stride site. So **buildLines' entire code path is stride-clean at 1024.**
+- **⇒ NEW CONCLUSION: the wall line-fill bug is a RUNTIME DATA issue, not a code
+  stride site.** The most likely mechanism: in the check loop, an *empty* intermediate
+  cell's `GetBuilding()` returns a **phantom building** (some building/unit registered
+  at the WRONG cell by an occupancy path at 1024) → the loop hits `if(GetBuilding())…
+  break` with linkLength 0 → no fill. OR occupancy makes `CanThisExistHere` see the
+  empty cell as blocked. Either way it's wrong CELL CONTENT, not wrong cell math.
+- **NEXT (probe, decisive):** hook the wall fn's check loop and log, per stepped
+  cell: coord, `TryGetCellAt`!=null, `GetBuilding()` ptr, `CanThisExistHere` result,
+  and the final `linkLength`. If an empty cell reports a non-null GetBuilding or a
+  false CanThisExistHere, that's it → chase which occupancy path mis-registered it
+  (`MapClass_AddContentAt_*` 0x568xxx / `UnitClass_MarkOccupationBits`). Re-derive
+  buildLines' Antares RVA first (PDB seg1:0x173D0 → 0x100183D0 landed on a small fn;
+  find the fn reading `Type->GuardRange/256` with a 4-dir `+=2` loop). Line-fill is
+  shared Antares, probe-able on the curated (mingw) build. **This is the deepest the
+  wall bug has ever been traced: source-level (buildLines), all cell/coord math
+  verified 1024-correct, narrowed to runtime cell-content.**
+
 ## (superseded) STRATEGIC RECONSIDERATION — validate the BROAD base
 User reminder (authoritative): the **broad build's ONLY real bug was walls**
 (+ sidebar) — factory exit, free units, corners, foundations, movement all worked
