@@ -73,7 +73,17 @@ base.** Two bugs remain:
    (`CellClass_AttachesToNeighbourOverlay` 0x480534) works; the GuardRange
    straight-line auto-fill between two placed wall sections does not at 1024.
 
-### ★★★ WALL BUG FIXED (2026-08-10, build `e4938371`, pending test) ★★★
+### ★★★ NEAR-COMPLETE (2026-08-10, build `5aedab9e`) ★★★
+Broad base, CuratedBase=0, Stride=1024. WALLS FIXED (0x5887C7) + sidebar alloc
+hooks 0x48EB12/35 deferred in broad mode (should fix bright cameos). Confirmed
+working by user on the wall-fix build: barracks exit, walls line-fill, pathfinding,
+both corners, free unit (CMIN/GAREFN). This build adds the sidebar fix on top.
+Backups: `MapSizeExt.dll.broad-wallfix.bak` (walls only, e4938371),
+`MapSizeExt.dll.broad-prewallfix.bak` (10fe5d42). If sidebar still bright or shroud
+striped -> the alloc-hook defer was wrong, revert to .broad-wallfix.bak. TODO:
+re-verify AI base building.
+
+## ★★★ WALL BUG FIXED (2026-08-10, build `e4938371`, pending test) ★★★
 The long-standing wall bug is a SINGLE missing stride site. User confirmed the
 gap-fill is regular NAWALL and worked at 512. It is **vanilla gamemd** (NOT Antares
 buildLines — that only does IsLinkable firewall/trench). The vanilla NAWALL
