@@ -73,6 +73,22 @@ base.** Two bugs remain:
    (`CellClass_AttachesToNeighbourOverlay` 0x480534) works; the GuardRange
    straight-line auto-fill between two placed wall sections does not at 1024.
 
+### ★★★ WALL BUG FIXED (2026-08-10, build `e4938371`, pending test) ★★★
+The long-standing wall bug is a SINGLE missing stride site. User confirmed the
+gap-fill is regular NAWALL and worked at 512. It is **vanilla gamemd** (NOT Antares
+buildLines — that only does IsLinkable firewall/trench). The vanilla NAWALL
+line-fill = `sub_588750`, reached from `HouseClass::UnitFromFactory @0x4FB27A` for
+`Wall=yes` buildings: scans the 4 cardinal dirs (coord table `0x89F688`) up to
+`GuardRange` for a same-type wall and fills the gap. Its cell index `shl ecx,9`
+@**`0x5887C7`** was **missing from BOTH the broad `kCellStrideSites` and the curated
+table** → at 1024 it indexed `Y*512+X`, read/wrote wrong cells → gaps never filled.
+(The 3 paired `cmp eax,0x40000` bounds in the fn are auto-covered by broad
+ApplyBoundsPatches; added explicitly to curated.) Fix: add `0x5887C7`. Built broad
+via CI (`gh workflow run build.yml`, run 31368798046, success), deployed
+`e4938371` (CuratedBase=0). Prev broad backup: `MapSizeExt.dll.broad-prewallfix.bak`
+(10fe5d42). **Remaining after this: sidebar brightness only** (defer alloc hooks
+`0x48EB12/35` — they run in broad mode; needs another CI build).
+
 ### ⚠️ FORK (2026-08-10): buildLines only fills LINKABLE walls (firewall/trench)
 `BuildingTypeExt::IsLinkable() = Firewall_Is || (IsTrench > -1)`
 (`Antares-src/src/Ext/BuildingType/Body.cpp:461`). The deployed mod's `[NAWALL]`
