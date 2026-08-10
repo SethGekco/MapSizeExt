@@ -55,6 +55,19 @@ dll_detach,...,-1,subzone,0,...,extension,0,...     <- status=-1, 0 patches appl
   features work correctly on >512 maps. Skipped for now (no Phobos-feature bug
   reported). Prev build backup: `…/RA2/MapSizeExt.dll.pre-antarescmp.bak`.
 
+## UPDATE (build `fbba6760`): fixing deploy/build via the occupancy subsystem
+`0a6f5d1c`'s 3 foundation accessors applied (`patch_applied,115`) but deploy/build
+was STILL broken. Real cause: the whole **`MapClass` content/occupancy subsystem
+`0x568xxx`** (`AddContentAt`/`RemoveContentAt` + siblings) is unpatched in his base
+— 13 `shl 9` + 21 `cmp 0x40000` sites. Left at 512, any cell with index ≥ 0x40000
+(Y ≥ 256 @1024) returns the dummy off-map cell → can't deploy/build in >half the
+map, footprint mis-registers. Added all 34 (BUG-ATLAS 2.15). Build `fbba6760`
+installed. AWAITING deploy/build test. **General lesson for the rest of the
+project:** his curated base only covers the subsystems his manifests enumerated;
+each subsystem newly exercised at >512 (placement, occupancy, …) may need its
+`shl 9`/`cmp 0x40000` sites ported from the broad build's `kCellStrideSites`
+(`src/Patches.cpp`) — diff by address range, verify each is a real cell accessor.
+
 ## UPDATE (build `0a6f5d1c`): corner crash FIXED; now fixing 1-cell foundation
 Re-test of `aac7fb72` at real 1024 (log confirmed `status=1, extension_patches=148`,
 `MaxCells=1048576`, coord extent 601): **bottom-left AND bottom-right corners work,
