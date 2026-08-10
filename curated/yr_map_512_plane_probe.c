@@ -114,6 +114,14 @@ __attribute__((section(".syhks00"), used, aligned(16)))
 static struct HookEntry hook_Map512CellMissProbe = {
     0x0056577a, 0x5, "Map512CellMissProbe",
 };
+__attribute__((section(".syhks00"), used, aligned(16)))
+static struct HookEntry hook_Map512KickoutEnterProbe = {
+    0x00443c60, 0x6, "Map512KickoutEnterProbe",
+};
+__attribute__((section(".syhks00"), used, aligned(16)))
+static struct HookEntry hook_Map512KickoutFailProbe = {
+    0x00445696, 0x5, "Map512KickoutFailProbe",
+};
 
 typedef struct SyringeRegisters {
     uint32_t origin;
@@ -1236,6 +1244,34 @@ extern "C" __declspec(dllexport) DWORD __cdecl Map512CellMissProbe(void* registe
             g_probe_miss_callers[g_probe_miss_n++] = caller;
             logf("CELLMISS,0x%08X,x,%d,y,%d\n", caller, X, Y);
         }
+    }
+    return 0;
+}
+
+/* KICKOUT probes -- BuildingClass::KickOutUnit (0x443c60): places a produced
+ * unit / free unit out of a building. ENTER (sub esp,0x130): ecx=building,
+ * [esp+4]=object being kicked out. FAIL (0x445696): the fn returns 0/false
+ * (did not kick out). If ENTER fires after building a unit / NAREFN but FAIL
+ * follows, placement is failing (free HARV missing / clog). If ENTER succeeds
+ * (no FAIL) yet units still idle on the exit cell, the fault is post-placement
+ * (scatter/mission), and we probe that next. Capped. */
+static int g_kickout_enter = 0;
+static int g_kickout_fail = 0;
+extern "C" __declspec(dllexport) DWORD __cdecl Map512KickoutEnterProbe(void* registers) {
+    SyringeRegisters* r = (SyringeRegisters*)registers;
+    if (r && g_patch_status > 0 && g_kickout_enter < 400) {
+        uint32_t obj = *(volatile uint32_t*)(r->esp + 4u);
+        ++g_kickout_enter;
+        logf("KICKOUT_ENTER,%d,building,0x%08X,obj,0x%08X\n",
+             g_kickout_enter, (unsigned)r->ecx, (unsigned)obj);
+    }
+    return 0;
+}
+extern "C" __declspec(dllexport) DWORD __cdecl Map512KickoutFailProbe(void* registers) {
+    SyringeRegisters* r = (SyringeRegisters*)registers;
+    if (r && g_patch_status > 0 && g_kickout_fail < 400) {
+        ++g_kickout_fail;
+        logf("KICKOUT_FAIL,%d\n", g_kickout_fail);
     }
     return 0;
 }
