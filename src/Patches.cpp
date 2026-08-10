@@ -80,6 +80,13 @@ static const DWORD kCellStrideSites[] =
     0x586D89, 0x586DCF, 0x586ECD, 0x586FEB, 0x5871B0, 0x587249, 0x587279, 0x5873A6,
     0x58745A, 0x5874B8, 0x587535, 0x5875E2, 0x587679, 0x58786D, 0x5878F4, 0x58796E,
     0x5879F3, 0x587A91, 0x587B10, 0x587B82, 0x587BF7, 0x588169, 0x588256, 0x588467,
+    // Vanilla NAWALL line-fill (sub_588750, reached from HouseClass::UnitFromFactory
+    // @0x4FB27A for Wall=yes buildings): shl ecx,9 cell-index for the GuardRange
+    // straight-line gap-fill scan. Missing here left it at Y*512+X -> the fill
+    // read/wrote wrong cells -> "walls only connect adjacent, gaps don't fill" at
+    // 1024 (the long-standing wall bug, present in BOTH builds). The 3 paired
+    // cmp eax,0x40000 bounds in that fn are already covered by ApplyBoundsPatches.
+    0x5887C7,
     // Foundation-occupancy misses in MapClass::AddContentAt / RemoveContentAt.
     // Each computes cell index Y*512+X, bounds-checks vs the RUNTIME total in
     // [this+0x140] (Cells.Capacity = MaxNumCells = 1048576, already patched), then
