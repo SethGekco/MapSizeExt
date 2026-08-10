@@ -122,6 +122,10 @@ __attribute__((section(".syhks00"), used, aligned(16)))
 static struct HookEntry hook_Map512KickoutFailProbe = {
     0x00445696, 0x5, "Map512KickoutFailProbe",
 };
+__attribute__((section(".syhks00"), used, aligned(16)))
+static struct HookEntry hook_Map512ScatterProbe = {
+    0x0051d0dd, 0x6, "Map512ScatterProbe",
+};
 
 typedef struct SyringeRegisters {
     uint32_t origin;
@@ -1272,6 +1276,29 @@ extern "C" __declspec(dllexport) DWORD __cdecl Map512KickoutFailProbe(void* regi
     if (r && g_patch_status > 0 && g_kickout_fail < 400) {
         ++g_kickout_fail;
         logf("KICKOUT_FAIL,%d\n", g_kickout_fail);
+    }
+    return 0;
+}
+
+/* SCATTER probe -- InfantryClass::Scatter (0x51d0dd), esi=the infantry. If a
+ * unit that KICKOUT re-kicks repeatedly (stuck on exit) ALSO shows up here, it
+ * is trying to scatter off the exit cell and failing (free-cell scan); if it
+ * NEVER appears, no scatter/move order is being issued at all (fault is in the
+ * factory release / mission assignment). Dedup by unit ptr, capped. */
+static uint32_t g_scatter_seen[96];
+static int g_scatter_n = 0;
+extern "C" __declspec(dllexport) DWORD __cdecl Map512ScatterProbe(void* registers) {
+    SyringeRegisters* r = (SyringeRegisters*)registers;
+    if (r && g_patch_status > 0 && g_scatter_n < 96) {
+        uint32_t unit = r->esi;
+        int seen = 0;
+        for (int i = 0; i < g_scatter_n; ++i) {
+            if (g_scatter_seen[i] == unit) { seen = 1; break; }
+        }
+        if (!seen) {
+            g_scatter_seen[g_scatter_n++] = unit;
+            logf("SCATTER,unit,0x%08X\n", (unsigned)unit);
+        }
     }
     return 0;
 }
