@@ -55,7 +55,25 @@ dll_detach,...,-1,subzone,0,...,extension,0,...     <- status=-1, 0 patches appl
   features work correctly on >512 maps. Skipped for now (no Phobos-feature bug
   reported). Prev build backup: `…/RA2/MapSizeExt.dll.pre-antarescmp.bak`.
 
-## ⚠️ STRATEGIC RECONSIDERATION (2026-08-09) — validate the BROAD base
+## ✅ DECISION: BROAD BASE (A/B confirmed 2026-08-09)
+A/B test of broad build `10fe5d42` (CuratedBase=0) on the 300×300 map — user
+results: factory exit ✅, free harvester ✅, all 4 corners ✅, radar/deploy/
+movement ✅, AI spacing ✅ (no extra conyards). ONLY defects: **wall line-fill**
+(adjacency connects, GuardRange gaps don't fill — SAME as curated) and **sidebar
+cameos too bright**. So the wall line-fill bug is FUNDAMENTAL (present in BOTH
+bases), not a curated regression — it is THE persistent wall bug. Curated's
+exit/free-unit failures were self-inflicted. **We build the endgame on the broad
+base.** Two bugs remain:
+1. **Sidebar bright** — known fix (§2.14): the alloc hooks `MapClass_Alloc_Stride1/2`
+   @`0x48EB12/35` (`src/Hooks.cpp`) are gated `if (g_CuratedBase) return 0;` so in
+   broad mode they run at 1024 and over-bright the cameos. Fix: defer them in broad
+   mode too (verify shroud stays clean — their 1024 sizing was the curated stripe).
+   Needs an MSVC CI rebuild (`.github/workflows/build.yml`).
+2. **Wall line-fill** — the one real target. Present in both bases. Adjacency
+   (`CellClass_AttachesToNeighbourOverlay` 0x480534) works; the GuardRange
+   straight-line auto-fill between two placed wall sections does not at 1024.
+
+## (superseded) STRATEGIC RECONSIDERATION — validate the BROAD base
 User reminder (authoritative): the **broad build's ONLY real bug was walls**
 (+ sidebar) — factory exit, free units, corners, foundations, movement all worked
 at 300×300. Our **curated** build fixed walls-adjacency + sidebar but **introduced
