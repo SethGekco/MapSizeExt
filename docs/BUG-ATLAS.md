@@ -346,6 +346,22 @@ then carry over our plane-init/bounds coverage (adds 300×300). Best of both.
 - Note: our **broad build builds foundations fine** — so the foundation coverage
   is somewhere in the ~360 gamemd sites his 74 omits (and it is NOT the wall FP:
   broad builds foundations AND breaks walls).
+- **RESOLVED SITES (2026-08-09, build `0a6f5d1c`, pending test):** once the DLL
+  was actually active at 1024 (see HANDOFF critical discovery), 300×300 showed the
+  classic profile — MCV deploys as a **1-cell** building, **can't build anything**,
+  and **>half the map refuses deploy** despite the valid cursor (sidebar, path,
+  MCV-grounded all CORRECT). Traced to two cell-plane accessors his table omits,
+  both verified genuine (not palette FPs):
+  - `0x5656EA` `MapClass::operator[]`-flag read: `shl eax,9` (→`0xA`) + its bound
+    `cmp eax,0x40000` @`0x5656F1` (→`0x100000`). Both needed together: patching the
+    shl to 1024 pushes valid indices past `0x40000`, so the bound must widen too or
+    high-row cells return the dummy off-map cell `0xABDC50` → "can't deploy here."
+  - `0x483B32` cell-plane **store**: `shl edi,9` (→`0xA`); `mov [0x87F924][idx],obj`
+    registers an object into the plane. At 512 the footprint registers in wrong
+    slots → 1-cell building + blocks neighbours. Added all three to
+    `yr_map_512_patch_table.h`. If foundation improves but isn't perfect, hunt for
+    sibling occupancy/placement-validity accessors the same way (disasm the deploy
+    validity fn, find its `shl 9` / `cmp 0x40000` cell-index sites).
 
 ### 2.16 Coordinate wrap: bottom-right folds to top-left (inverse-conversion sign-extend)
 - **Symptom:** on a >512-coord map (300×300), units ordered to the **bottom-right

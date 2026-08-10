@@ -55,7 +55,16 @@ dll_detach,...,-1,subzone,0,...,extension,0,...     <- status=-1, 0 patches appl
   features work correctly on >512 maps. Skipped for now (no Phobos-feature bug
   reported). Prev build backup: `…/RA2/MapSizeExt.dll.pre-antarescmp.bak`.
 
-## CURRENT STATE (build md5 `aac7fb72`, installed — AWAITING RE-TEST AT REAL 1024)
+## UPDATE (build `0a6f5d1c`): corner crash FIXED; now fixing 1-cell foundation
+Re-test of `aac7fb72` at real 1024 (log confirmed `status=1, extension_patches=148`,
+`MaxCells=1048576`, coord extent 601): **bottom-left AND bottom-right corners work,
+units route correctly — the §2.17 crash is resolved.** Remaining at 1024: MCV
+deploys 1-cell, can't build, >half the map refuses deploy (sidebar/path/MCV-grounded
+all correct). Added the 3 foundation/occupancy accessor patches (`0x5656EA` shl +
+`0x5656F1` cmp + `0x483B32` store) — see BUG-ATLAS 2.15. Build `0a6f5d1c` installed;
+prev backup `…/RA2/MapSizeExt.dll.pre-foundation.bak`. AWAITING deploy/build test.
+
+## PRIOR STATE (build md5 `aac7fb72` — superseded by `0a6f5d1c`)
 Previously *claimed*: 300×300 loads/plays; walls, sidebar, foundations, movement,
 pathfinding, deploy, radar, shroud, bottom-right OK — **but that state must now be
 re-confirmed**, because the DLL was a no-op in the last snapshot. First thing to
