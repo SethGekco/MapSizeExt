@@ -100,6 +100,20 @@ __attribute__((section(".syhks00"), used, aligned(16)))
 static struct HookEntry hook_Map512CoordTransformGuard = {
     0x00660540, 0x5, "Map512CoordTransformGuard",
 };
+/* DIAGNOSTIC probes (read-only, return 0 to continue). Identify the wall /
+ * drag-select / infantry-exit regressions at 1024. Remove once resolved. */
+__attribute__((section(".syhks00"), used, aligned(16)))
+static struct HookEntry hook_Map512WallDrawProbe = {
+    0x0047f96a, 0x6, "Map512WallDrawProbe",
+};
+__attribute__((section(".syhks00"), used, aligned(16)))
+static struct HookEntry hook_Map512CellLookupCallerProbe = {
+    0x005657bb, 0x6, "Map512CellLookupCallerProbe",
+};
+__attribute__((section(".syhks00"), used, aligned(16)))
+static struct HookEntry hook_Map512CellMissProbe = {
+    0x0056577a, 0x5, "Map512CellMissProbe",
+};
 
 typedef struct SyringeRegisters {
     uint32_t origin;
@@ -1126,6 +1140,85 @@ extern "C" __declspec(dllexport) DWORD __cdecl Map512CoordTransformGuard(void* r
     }
     r->eax = 0u;
     return 0x0066053au;
+}
+
+/* WALL-DRAW probe @0x47f96a (stolen: mov cl,[ebx+0x2a8], 6 bytes). ESI=cell,
+ * EBX=OverlayTypeClass. Logs each drawn wall's stored connection frame
+ * (cell+0x11E). If a wall next to another wall draws frame 0, the connection
+ * PRODUCER failed to see the neighbour at 1024 (BUG-ATLAS 2.1). Capped. */
+extern "C" __declspec(dllexport) DWORD __cdecl Map512WallDrawProbe(void* registers) {
+    SyringeRegisters* r = (SyringeRegisters*)registers;
+    static int fires = 0;
+    if (r && g_patch_status > 0 && fires < 250) {
+        uint32_t cell = r->esi;
+        uint32_t otype = r->ebx;
+        int X = (int)*(volatile int16_t*)(cell + 0x24u);
+        int Y = (int)*(volatile int16_t*)(cell + 0x26u);
+        int ovl = *(volatile int32_t*)(cell + 0x44u);
+        if (ovl >= 0) {
+            int fr = *(volatile uint8_t*)(cell + 0x11eu);
+            int flag = *(volatile uint8_t*)(otype + 0x2a8u);
+            ++fires;
+            logf("WALLDRAW,x,%d,y,%d,overlay,%d,frame,0x%X,wallflag,%d\n",
+                 X, Y, ovl, fr, flag);
+        }
+    }
+    return 0;
+}
+
+/* SHARED CELL-LOOKUP caller probe @0x5657bb (stolen: mov ecx,[ecx+0x13c], 6
+ * bytes). At this point [ESP]=caller return addr, EDX=CellStruct*{X@0,Y@2},
+ * EAX=computed cell index (already 1024-correct). Dedups by caller so it logs
+ * each distinct calling function ONCE (no flood) -> reveals which functions do
+ * cell lookups. Do a drag-select, then build infantry: the NEW caller
+ * addresses appearing (in order) localize the drag-select / unit-exit fns so
+ * their inline cell math can be inspected. Capped at 96 distinct callers. */
+static uint32_t g_probe_seen_callers[96];
+static int g_probe_seen_n = 0;
+extern "C" __declspec(dllexport) DWORD __cdecl Map512CellLookupCallerProbe(void* registers) {
+    SyringeRegisters* r = (SyringeRegisters*)registers;
+    if (r && g_patch_status > 0 && g_probe_seen_n < 96) {
+        uint32_t caller = *(volatile uint32_t*)(r->esp);
+        int seen = 0;
+        for (int i = 0; i < g_probe_seen_n; ++i) {
+            if (g_probe_seen_callers[i] == caller) { seen = 1; break; }
+        }
+        if (!seen) {
+            uint32_t cs = r->edx;
+            int X = (int)*(volatile int16_t*)(cs + 0u);
+            int Y = (int)*(volatile int16_t*)(cs + 2u);
+            g_probe_seen_callers[g_probe_seen_n++] = caller;
+            logf("CELLCALLER,0x%08X,x,%d,y,%d,idx,%u\n",
+                 caller, X, Y, (unsigned)r->eax);
+        }
+    }
+    return 0;
+}
+
+/* CELL-MISS probe @0x56577a (stolen: mov [esp+0xc],si, 5 bytes) -- GetCellAt's
+ * DUMMY-return path (index negative or >= capacity -> returns off-map cell
+ * 0xABDC50). ESI=requested cell X, EAX=requested cell Y, [ESP+8]=caller. This
+ * is the direct FAILURE signature: a function asking for a cell it can't get.
+ * If drag-select / infantry-exit compute a wrong-stride coord, they land here.
+ * Dedups by caller. Capped at 96. */
+static uint32_t g_probe_miss_callers[96];
+static int g_probe_miss_n = 0;
+extern "C" __declspec(dllexport) DWORD __cdecl Map512CellMissProbe(void* registers) {
+    SyringeRegisters* r = (SyringeRegisters*)registers;
+    if (r && g_patch_status > 0 && g_probe_miss_n < 96) {
+        uint32_t caller = *(volatile uint32_t*)(r->esp + 8u);
+        int seen = 0;
+        for (int i = 0; i < g_probe_miss_n; ++i) {
+            if (g_probe_miss_callers[i] == caller) { seen = 1; break; }
+        }
+        if (!seen) {
+            int X = (int)(int16_t)(r->esi & 0xffffu);
+            int Y = (int)(int16_t)(r->eax & 0xffffu);
+            g_probe_miss_callers[g_probe_miss_n++] = caller;
+            logf("CELLMISS,0x%08X,x,%d,y,%d\n", caller, X, Y);
+        }
+    }
+    return 0;
 }
 
 
