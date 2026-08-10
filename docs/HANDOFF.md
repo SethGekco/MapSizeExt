@@ -99,7 +99,20 @@ regressions.
 | `fbba6760` | +`0x568xxx` occupancy suite (13 shl + 21 cmp, all verified cell accessors) | **build/deploy/foundation WORK**; walls, drag-select, infantry-exit BROKEN |
 | `03d61c8f` | **−`0x483B32`** (suspected wall/select/exit FP) | redundant no-op; NOT the culprit (walls still broke, buildings still multi-cell) |
 | `9e320a54` | +3 read-only diagnostic probes | proved cell plane 100% correct; walls-adjacency + drag-select WORK; 2 non-stride bugs left |
-| `e0cc8938` | **skip 73 Antares `shl` patches** (`g_skip_antares_shl`, keep 75 cmp) | ← WALL LINE-FILL BISECTION, testing now |
+| `e0cc8938` | skip 73 Antares `shl` patches (bisection) | **RULED OUT**: walls stayed broken AND shroud striped + movement/AIBaseSpacing broke → Antares shl are load-bearing (shroud/tactical/AI cell math), NOT the wall FP |
+| `1191a18980b3` | restore Antares `shl` (`g_skip_antares_shl=0`) | back to healthy state; walls line-fill still the open issue |
+
+### Wall line-fill — narrowing so far (still open)
+Confirmed NOT the cause: cell-plane stride (probe: all lookups correct), the
+Antares shl patches (bisected out — needed for shroud/movement/AI), and `0x483B32`
+(redundant). The line-fill has been broken since 1024 first became *active* (it was
+only testable once building worked at `fbba6760`); the earlier "walls worked" was
+the no-op/vanilla-512 state, so this is a genuine 1024 gap, not a single-patch
+regression. No hardcoded ±512 cell step exists in the wall region (0x47e-0x486).
+Next: locate the wall line-fill / GuardRange scan function (base RA2 feature in
+gamemd; `GuardRange` = TechnoTypeClass field) and probe its straight-line scan —
+suspect a distance/coordinate computation, or a scan step his base doesn't cover.
+The unit-exit / FreeUnit bug is the other open item (kick-out/scatter logic).
 
 ### Wall line-fill bisection (build `e0cc8938`)
 Walls broke *recently* → a recent change caused it (narrow window). Evidence points

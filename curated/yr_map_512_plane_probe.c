@@ -629,7 +629,10 @@ static void rollback_module_opcode_selected(const uint8_t* selected, uint32_t co
  * The shl half is NOT needed for the corner fix (that was the Antares cmp
  * patches), so removing it keeps corners while testing the wall hypothesis.
  * Set to 0 to restore them. Phobos shl (also size 3) is excluded by the 'A'. */
-static int g_skip_antares_shl = 1;
+static int g_skip_antares_shl = 0;   /* RULED OUT as wall cause: with shl off,
+    walls stayed broken AND shroud striped + movement/AIBaseSpacing broke, so the
+    Antares shl are load-bearing (shroud/tactical/AI cell math) and NOT the wall
+    line-fill FP. Kept ON. Wall line-fill is a separate, still-unpinned issue. */
 static int module_patch_disabled(const ModuleOpcodePatch* p) {
     return g_skip_antares_shl && p->size == 3u && p->module_name[0] == 'A';
 }
