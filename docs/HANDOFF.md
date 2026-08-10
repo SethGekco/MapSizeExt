@@ -55,6 +55,39 @@ dll_detach,...,-1,subzone,0,...,extension,0,...     <- status=-1, 0 patches appl
   features work correctly on >512 maps. Skipped for now (no Phobos-feature bug
   reported). Prev build backup: `…/RA2/MapSizeExt.dll.pre-antarescmp.bak`.
 
+## PROBE RESULTS (build `9e320a54`, 2026-08-09) — 2 bugs left, both NON-cell-stride
+Ran 3 read-only probes (WALLDRAW @0x47f96a, CELLCALLER @0x5657bb, CELLMISS
+@0x56577a). Findings from `yr_map_512_plane_probe.csv`:
+- **Every cell lookup computes the CORRECT 1024 index** (e.g. x300,y149→152876 =
+  149*1024+300). The shared cell plane is fully healthy at 1024. The only 2
+  CELLMISS were both coord (0,0) and benign (a coord→string tooltip fn 0x4AE5D0;
+  and 0x4B0F20 reading a produced object's own limbo coord).
+- **Walls: adjacency WORKS** (WALLDRAW: lone wall frame=0x0, adjacent walls
+  frame=0x1/0x4). **BUT `GuardRange=` line-fill is BROKEN** — placing two wall
+  sections apart on a straight line within GuardRange should auto-fill the gap;
+  it doesn't at 1024. (User-corrected: this is the real wall bug, not adjacency.)
+- **Drag-select WORKS.** (Earlier "broken" was just that freshly-built units sit
+  idle on the exit cell, so they weren't selectable — a symptom of the exit bug.)
+
+### REMAINING BUGS (both are higher-level logic, NOT cell-plane stride)
+1. **Unit-exit / FreeUnit**: units produced from a building go idle on the exit
+   cell instead of scattering/moving to gather; `FreeUnit=` (e.g. NAREFN's free
+   harvester) doesn't appear. The cell plane is correct, so this is the kick-out/
+   scatter/placement logic — likely a coordinate or occupancy-scan computation his
+   base doesn't cover at 1024. NOT caught by the cell probes (no cell-miss).
+   Candidate fn: `FactoryClass::AI`-family @0x4b0f20 (produces units), but the
+   (0,0) it reads looked benign. Needs a targeted kick-out/scatter probe.
+2. **Wall `GuardRange=` line-fill**: no hardcoded ±512 cell-index step exists in
+   the wall/placement regions (0x47e-0x486), and the 8-neighbour table 0x7E3774
+   (his base patches it) is used only by pathfinding — so line-fill uses coord
+   stepping (stride-correct). The break is elsewhere in the fill logic (range/
+   straight-line test or the intermediate cell-clear check). Needs its function
+   located + probed. GuardRange is a BuildingTypeClass field (wall = building).
+### METHOD for next round
+Both need a targeted probe on their specific function (locate first). The generic
+cell probes proved the plane is correct and ruled out the whole cell-stride class
+for these two — a real result. Don't re-port MapClass sites for these.
+
 ## CHANGELOG since deploy/build troubles (what changed, in order)
 Everything below happened AFTER the DLL first became active at real 1024
 (`aac7fb72`). Use this to localize the wall / drag-select / infantry-exit
