@@ -97,7 +97,24 @@ regressions.
 | `aac7fb72` | non-fatal module preflight + 75 Antares cmp (DLL finally active @1024) | corners fixed; deploy 1-cell, can't build |
 | `0a6f5d1c` | +foundation accessors `0x5656EA` shl, `0x5656F1` cmp, **`0x483B32` store** | still 1-cell foundation, still can't build |
 | `fbba6760` | +`0x568xxx` occupancy suite (13 shl + 21 cmp, all verified cell accessors) | **build/deploy/foundation WORK**; walls, drag-select, infantry-exit BROKEN |
-| `03d61c8f` | **−`0x483B32`** (suspected wall/select/exit FP; see below) | ← TESTING NOW |
+| `03d61c8f` | **−`0x483B32`** (suspected wall/select/exit FP) | redundant no-op; NOT the culprit (walls still broke, buildings still multi-cell) |
+| `9e320a54` | +3 read-only diagnostic probes | proved cell plane 100% correct; walls-adjacency + drag-select WORK; 2 non-stride bugs left |
+| `e0cc8938` | **skip 73 Antares `shl` patches** (`g_skip_antares_shl`, keep 75 cmp) | ← WALL LINE-FILL BISECTION, testing now |
+
+### Wall line-fill bisection (build `e0cc8938`)
+Walls broke *recently* → a recent change caused it (narrow window). Evidence points
+at the Antares patches: broad build (full Antares) breaks walls; his base (no
+Antares) has clean walls; we added 148 Antares patches and walls broke. The 73
+Antares **shl** patches are removable — the corner fix came from the 75 Antares
+**cmp** patches, not the shl (per M4 handoff) — so this build skips the shl and
+keeps the cmp. Toggle: `g_skip_antares_shl` in `yr_map_512_plane_probe.c`.
+- **If wall line-fill works now:** the Antares shl patches were the wall FP (and
+  likely redundant — his base handles Antares shroud via its own accessor hook).
+  Keep them off; verify shroud is still clean and corners still work.
+- **If shroud goes striped:** the Antares shl WERE doing shroud work (§2.11) —
+  note it, we'll need a narrower subset. **If walls still broken:** the FP is not
+  the Antares shl; flip `g_skip_antares_shl=0` and suspect the occupancy `cmp`
+  widen or an Antares `cmp`. Prev build backup: `MapSizeExt.dll.pre-antaresshl-off.bak`.
 
 **Wall / drag-select / infantry-exit regression analysis:**
 - The `0x568xxx` occupancy suite was audited site-by-site: all 34 are genuine cell

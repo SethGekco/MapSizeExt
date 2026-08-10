@@ -621,6 +621,19 @@ static void rollback_module_opcode_selected(const uint8_t* selected, uint32_t co
     g_extension_patches = 0;
 }
 
+/* WALL LINE-FILL BISECTION (2026-08-09): the 73 Antares.dll shl-9 patches
+ * (size 3) are the prime suspect for breaking GuardRange wall line-fill:
+ *   - broad build patches Antares fully  -> breaks walls (BUG-ATLAS 2.1);
+ *   - his base patches NO Antares         -> clean walls;
+ *   - we added 148 Antares patches        -> walls broke.
+ * The shl half is NOT needed for the corner fix (that was the Antares cmp
+ * patches), so removing it keeps corners while testing the wall hypothesis.
+ * Set to 0 to restore them. Phobos shl (also size 3) is excluded by the 'A'. */
+static int g_skip_antares_shl = 1;
+static int module_patch_disabled(const ModuleOpcodePatch* p) {
+    return g_skip_antares_shl && p->size == 3u && p->module_name[0] == 'A';
+}
+
 static int apply_map512_patches(void) {
     if (g_patch_status != 0) {
         return g_patch_status > 0;
@@ -687,6 +700,9 @@ static int apply_map512_patches(void) {
         HMODULE module = GetModuleHandleA(patch->module_name);
         if (!module) {
             continue;
+        }
+        if (module_patch_disabled(patch)) {
+            continue;   /* Antares shl bisection: leave module_present[i]=0 */
         }
         module_present[i] = 1u;
         const uint32_t address = (uint32_t)(uintptr_t)module + patch->rva;
