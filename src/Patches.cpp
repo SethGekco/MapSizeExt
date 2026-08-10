@@ -562,23 +562,52 @@ int ApplySubzoneScalePatches(FILE* log)
     return n;
 }
 
-// RADAR/minimap surfaces: 400x640 -> 800x1280, buffer 0x7D000 -> 0x1F4000, and the
-// 512 dimension gates -> 1024. Resizes the radar draw surfaces so the minimap
-// renders on the widened plane instead of being left uncreated.
-static const ByteEdit kRadar[] = {
-    {0x5FD2FD,5,{0x68,0x90,0x01,0x00,0x00},{0x68,0x20,0x03,0x00,0x00}},
-    {0x5FD302,5,{0x68,0x80,0x02,0x00,0x00},{0x68,0x00,0x05,0x00,0x00}},
-    {0x5FD31C,5,{0x68,0x00,0xd0,0x07,0x00},{0x68,0x00,0x40,0x1f,0x00}},
-    {0x5FD509,6,{0x81,0xfe,0x00,0x02,0x00,0x00},{0x81,0xfe,0x00,0x04,0x00,0x00}},
-    {0x5FD516,6,{0x81,0xff,0x00,0x02,0x00,0x00},{0x81,0xff,0x00,0x04,0x00,0x00}},
-    {0x5FD647,6,{0x81,0xfe,0x00,0x02,0x00,0x00},{0x81,0xfe,0x00,0x04,0x00,0x00}},
-    {0x5FD650,6,{0x81,0xff,0x00,0x02,0x00,0x00},{0x81,0xff,0x00,0x04,0x00,0x00}},
-};
+// RADAR/minimap surfaces. Vanilla draws the minimap into a 400x640 surface
+// (buffer 400*640*2 = 0x7D000 bytes) and gates its creation on `cmp dim,512`.
+// Both scale LINEARLY with the plane: at stride 1024 the surface doubled to
+// 800x1280 and the gates rose to 1024; at stride 2048 they quadruple. Rewrite
+// the immediates from `scale = stride/512` so the radar tracks ANY power-of-two
+// stride instead of a value hardwired for the 512->1024 doubling.
+//   push 0x190 (400)   -> 400*scale        surface width   @0x5FD2FD (imm @+1)
+//   push 0x280 (640)   -> 640*scale        surface height  @0x5FD302 (imm @+1)
+//   push 0x7D000       -> W*H*2 bytes       buffer size     @0x5FD31C (imm @+1)
+//   cmp reg,0x200 (512)-> stride            per-axis gate   @0x5FD509/516/647/650 (imm @+2)
+// Verify each site's CURRENT immediate equals the expected vanilla value before
+// writing, so a shifted address is skipped (logged) rather than corrupted.
+static bool PatchImm32(DWORD immVA, DWORD expect, DWORD nv, FILE* log, const char* tag)
+{
+    if (*reinterpret_cast<DWORD*>(immVA) != expect)
+    {
+        if (log) fprintf(log, "[radar] SKIP 0x%06X: imm 0x%X != expected 0x%X\n",
+                         immVA, *reinterpret_cast<DWORD*>(immVA), expect);
+        return false;
+    }
+    DWORD oldProt = 0;
+    void* p = reinterpret_cast<void*>(immVA);
+    if (!VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt)) return false;
+    *reinterpret_cast<DWORD*>(immVA) = nv;
+    VirtualProtect(p, 4, oldProt, &oldProt);
+    (void)tag;
+    return true;
+}
 int ApplyRadarPatches(FILE* log)
 {
     if (g_MapStride == 512) { if (log) fprintf(log, "[radar] surfaces stay 512  [no-op]\n"); return 0; }
-    int n = ApplyByteEdits(kRadar, sizeof(kRadar)/sizeof(ByteEdit), log, "radar");
-    if (log) fprintf(log, "[radar] minimap surfaces 512->1024 : %d/7\n", n);
+    const DWORD scale = (DWORD)g_MapStride / 512u;   // 2 @1024, 4 @2048
+    const DWORD surfW = 400u * scale;
+    const DWORD surfH = 640u * scale;
+    const DWORD bytes = surfW * surfH * 2u;          // 0x7D000 * scale^2
+    const DWORD gate  = (DWORD)g_MapStride;           // per-axis dim gate
+    int n = 0;
+    n += PatchImm32(0x5FD2FD + 1, 0x190,   surfW, log, "radar");  // push surface W
+    n += PatchImm32(0x5FD302 + 1, 0x280,   surfH, log, "radar");  // push surface H
+    n += PatchImm32(0x5FD31C + 1, 0x7D000, bytes, log, "radar");  // push buffer bytes
+    n += PatchImm32(0x5FD509 + 2, 0x200,   gate,  log, "radar");  // cmp esi,dim
+    n += PatchImm32(0x5FD516 + 2, 0x200,   gate,  log, "radar");  // cmp edi,dim
+    n += PatchImm32(0x5FD647 + 2, 0x200,   gate,  log, "radar");  // cmp esi,dim
+    n += PatchImm32(0x5FD650 + 2, 0x200,   gate,  log, "radar");  // cmp edi,dim
+    if (log) fprintf(log, "[radar] surface %ux%u (%u bytes), gate %u : %d/7\n",
+                     surfW, surfH, bytes, gate, n);
     return n;
 }
 
