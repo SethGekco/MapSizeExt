@@ -45,8 +45,12 @@ static void ApplyInit()
     g_StrideSkipTo    = cfg.StrideSkipTo;
     g_CuratedBase     = cfg.CuratedBase;
 
-    // IsoMapPack5 decode-buffer bump: 400x640x2 -> 768x1024x2 (fixed 3x).
-    const DWORD isoW = 768, isoH = 1024, isoBytes = isoW * isoH * 2;
+    // IsoMapPack5 decode-buffer bump: original 400x640x2. The buffer is indexed
+    // by (rx,ry) up to W+H-1, which for a stride-N map is <= N-1. Size it to the
+    // stride (+64 margin) so it auto-scales: 768x1024 (fixed) was only enough for
+    // ~W+H<=767 (300x300 rx<=599 ok; 500x500 rx<=999 OVERFLOWED at width 768).
+    const DWORD isoDim  = (g_MapStride > 512 ? g_MapStride : 640u) + 64u;
+    const DWORD isoW = isoDim, isoH = isoDim, isoBytes = isoW * isoH * 2;
     PatchDword(ADDR_ISOPACK_W_IMM,     isoW);
     PatchDword(ADDR_ISOPACK_H_IMM,     isoH);
     PatchDword(ADDR_ISOPACK_BYTES_IMM, isoBytes);
