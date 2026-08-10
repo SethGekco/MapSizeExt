@@ -55,6 +55,42 @@ dll_detach,...,-1,subzone,0,...,extension,0,...     <- status=-1, 0 patches appl
   features work correctly on >512 maps. Skipped for now (no Phobos-feature bug
   reported). Prev build backup: `…/RA2/MapSizeExt.dll.pre-antarescmp.bak`.
 
+## CHANGELOG since deploy/build troubles (what changed, in order)
+Everything below happened AFTER the DLL first became active at real 1024
+(`aac7fb72`). Use this to localize the wall / drag-select / infantry-exit
+regressions.
+| build | change | result |
+|---|---|---|
+| `aac7fb72` | non-fatal module preflight + 75 Antares cmp (DLL finally active @1024) | corners fixed; deploy 1-cell, can't build |
+| `0a6f5d1c` | +foundation accessors `0x5656EA` shl, `0x5656F1` cmp, **`0x483B32` store** | still 1-cell foundation, still can't build |
+| `fbba6760` | +`0x568xxx` occupancy suite (13 shl + 21 cmp, all verified cell accessors) | **build/deploy/foundation WORK**; walls, drag-select, infantry-exit BROKEN |
+| `03d61c8f` | **−`0x483B32`** (suspected wall/select/exit FP; see below) | ← TESTING NOW |
+
+**Wall / drag-select / infantry-exit regression analysis:**
+- The `0x568xxx` occupancy suite was audited site-by-site: all 34 are genuine cell
+  accessors (`shl 9; cmp 0x40000; mov [Items+idx]`), NOT false positives — so they
+  are not the cause and stay.
+- The wall-connection producer `0x485390` is fully **coord-based** and calls the
+  already-patched `0x5657A0`; it is stride-correct, so walls should work — pointing
+  to an FP, not a missing patch. The **entire wall/overlay region (0x47-0x48) has
+  exactly ONE shl site in the broad build: `0x483B32`** — which we added at
+  `0a6f5d1c`. Broad (has it) breaks walls; his base (omits it) had clean walls.
+  `0x483B32` also did NOT fix the 1-cell foundation, so it looks redundant now.
+  Hence `03d61c8f` removes it as the single-variable wall test.
+
+**BIG STRATEGIC FINDING (his base is far less complete than assumed):** diffing the
+broad build's `kCellStrideSites` (`src/Patches.cpp`, 438 shl sites) against his
+table shows **~395 cell-index sites his base does NOT patch**, densely spread across
+the whole MapClass/DisplayClass region `0x569xxx-0x588xxx` (display, selection,
+layers, occupancy, iteration…). His curated base only ever covered the subsystems
+his manifests enumerated (~76 + our adds). Because the DLL was a no-op until
+`aac7fb72`, none of this was exercised. So each subsystem we touch at real 1024
+(occupancy done; drag-select + infantry-exit likely next) is another cluster to
+port — verify each is a real cell accessor, avoid the palette FPs (`0x547DC7`,
+`0x493CF1-0x499ADC`) and the ranges his HOOKS own (iterator `0x578xxx`, subzone
+`0x582xxx`). Decision pending: incremental per-subsystem port vs. batch-port the
+`0x569-0x577` display region.
+
 ## UPDATE (build `fbba6760`): fixing deploy/build via the occupancy subsystem
 `0a6f5d1c`'s 3 foundation accessors applied (`patch_applied,115`) but deploy/build
 was STILL broken. Real cause: the whole **`MapClass` content/occupancy subsystem

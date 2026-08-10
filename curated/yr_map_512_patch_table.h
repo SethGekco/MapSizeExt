@@ -19,7 +19,14 @@ static const Map512PatchEntry g_map512_patch_table[] = {
        buildings occupy 1 cell and placement/deploy validity reads wrong cells. */
     {0x005656eau, 3u, {0xc1, 0xe0, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, {0xc1, 0xe0, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}, /* op[] flag read: shl eax,9 */
     {0x005656f1u, 5u, {0x3d, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, {0x3d, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}, /* op[] bound: cmp eax,0x40000 */
-    {0x00483b32u, 3u, {0xc1, 0xe7, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, {0xc1, 0xe7, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}, /* plane store: shl edi,9; mov [0x87F924][idx],obj */
+    /* 0x483B32 (CellClass self-register into Cells.Items) REMOVED as the suspected
+       wall/select/exit FP: it is the ONLY 0x47-0x48 site the broad build patches,
+       and broad is the build that breaks walls while his base (which omits it) has
+       clean walls. It did NOT fix the 1-cell foundation (the 0x568xxx occupancy
+       suite did, one build later), so it appears redundant. If walls/drag-select/
+       infantry-exit come back with this gone, this was the culprit; if foundation
+       regresses to 1-cell, it is load-bearing and must be restored.
+       {0x00483b32u, 3u, {0xc1,0xe7,0x09,...}, {0xc1,0xe7,0x0a,...}} */
     /* MapClass content/occupancy subsystem (AddContentAt/RemoveContentAt etc.),
        0x568xxx: cell-index accessors his 74 omit. Left at 512 the building
        footprint occupies wrong slots and the cmp 0x40000 bound rejects any
