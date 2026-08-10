@@ -55,6 +55,23 @@ dll_detach,...,-1,subzone,0,...,extension,0,...     <- status=-1, 0 patches appl
   features work correctly on >512 maps. Skipped for now (no Phobos-feature bug
   reported). Prev build backup: `…/RA2/MapSizeExt.dll.pre-antarescmp.bak`.
 
+## ⚠️ STRATEGIC RECONSIDERATION (2026-08-09) — validate the BROAD base
+User reminder (authoritative): the **broad build's ONLY real bug was walls**
+(+ sidebar) — factory exit, free units, corners, foundations, movement all worked
+at 300×300. Our **curated** build fixed walls-adjacency + sidebar but **introduced
+factory-exit + free-unit regressions** and still lacks wall line-fill. So curated
+may be the wrong base. Broad already: loads 300×300, survives bottom-left (§2.17
+notes "broad SURVIVES this"), runs exit/free-unit. Its defects — walls-connect FP
+and sidebar-bright (= alloc hooks `0x48EB12/35`, §2.14) — are both better-understood
+now, and we have the PDB symbol map to finally hunt the wall FP.
+**Action:** deployed the broad build `MapSizeExt.mine-probe.dll.bak` (md5
+`10fe5d42`, MSVC, `[Debug] CuratedBase=0`, `Stride=1024`) to A/B its real bug
+profile on THIS map. If it only shows walls(+sidebar) and exit/free-unit work,
+pivot: base on broad, defer the sidebar alloc hooks, solve walls. Curated build
+backed up at `…/RA2/MapSizeExt.dll.curated-scatterprobe.bak` (cb1fd977); restore +
+`CuratedBase=1` to return. Broad builds only via MSVC CI (`.github/workflows/
+build.yml`), config `[Debug] CuratedBase=0`.
+
 ## PROBE RESULTS (build `9e320a54`, 2026-08-09) — 2 bugs left, both NON-cell-stride
 Ran 3 read-only probes (WALLDRAW @0x47f96a, CELLCALLER @0x5657bb, CELLMISS
 @0x56577a). Findings from `yr_map_512_plane_probe.csv`:
