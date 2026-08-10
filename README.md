@@ -1,98 +1,112 @@
 # MapSizeExt
 
-A Syringe-injected DLL for Yuri's Revenge that patches the hardcoded 512-cell
-map stride, enabling map grids larger than 512×512.
+A [Syringe](https://github.com/Ares-Developers/Syringe)-injected DLL for
+**Command & Conquer: Red Alert 2 — Yuri's Revenge** that raises the engine's
+hardcoded **512-cell map grid** so you can play maps larger than the vanilla
+limit. It works alongside Ares/Antares + Phobos.
 
-## Status: Phase 1 — Proof of Concept
+## Status
 
-Only the minimum three hook sites are patched. The game will load and run on
-standard maps. Larger maps will crash until the sight/shroud cluster and radar
-sites are also hooked (Phase 2).
+**Stride 1024 — up to 512×512 maps — fully playable.** Confirmed in-game
+(temperate cliff map + generated 300×300 / 500×500): rendering and lighting,
+deploy/build, pathfinding including slopes and naval, harvester auto-mine,
+shroud/fog reveal, walls, the minimap/radar, and AI base-building all work.
 
-## Hook sites confirmed by binary analysis of gamemd.exe
+This is the first public milestone. Bigger *square* maps (past ~500×500) are
+blocked by a **separate** engine limit — see [Limits](#limits) — which is the
+next thing being worked on.
 
-| Address | What | Status |
-|---|---|---|
-| `0x5656EA` | `MapClass::operator[]` stride (`shl eax,0x9`) | ✅ Hooked |
-| `0x5656F1` | `MapClass::operator[]` bounds (`cmp eax,0x40000`) | ✅ Hooked (via operator[] hook) |
-| `0x48EB18` | Heap allocation stride 1 | ✅ Hooked |
-| `0x48EB35` | Heap allocation stride 2 | ✅ Hooked |
-| `0x483B32` | Inline cell array access stride | ✅ Hooked |
-| `0x565757` | `operator[]` lepton variant stride | ✅ Hooked |
-| `0x493CF1`–`0x495F39` | Sight/shroud reveal row calc (~30 sites) | ⏳ Phase 2 |
-| `0x497906`+ | More sight reveal row calcs | ⏳ Phase 2 |
-| `0x53D49E` | Radar/minimap rendering | ⏳ Phase 2 |
-| `0x547DC7` | Sight reveal row calc | ⏳ Phase 2 |
-| `0x429AB1/AC2` | Two-cell distance calc | ⏳ Phase 2 |
+## Install
 
-## Setup
+You need a working YR install that already runs Syringe-injected DLLs (e.g. the
+CnCNet client with Ares/Antares + Phobos).
 
-### Prerequisites
-- YRpp headers (clone into `YRpp/` subdirectory or adjust include path)
-- Syringe (already in your YR install)
-
-### Build
-Push to GitHub — Actions builds `MapSizeExt.dll` automatically.
-
-### Install
-1. Copy `MapSizeExt.dll` to your YR game directory
-2. Copy `MAPSIZEEXT.INI` to your YR game directory
-3. Add `-i=MapSizeExt.dll` to your Syringe arguments (alongside Ares/Phobos)
-4. Launch the game
+1. Copy **`MapSizeExt.dll`** and **`MAPSIZEEXT.INI`** into your YR game directory
+   (the folder with `gamemd-spawn.exe`).
+2. Make Syringe inject it — add `-i=MapSizeExt.dll` to the Syringe command line,
+   next to the existing `-i=Ares.dll`/`-i=Antares.dll` and `-i=Phobos.dll`:
+   - **Windows:** `ExtraCommandLineParams` in the client's `ClientDefinitions.ini`.
+   - **Linux/Wine (CnCNet):** the `wine Syringe.exe -i=… gamemd-spawn.exe` line in
+     `Resources/Compatibility/Unix/wine-game.sh`.
+   - The CnCNet client only injects DLLs that carry a `.syhks00` section — this
+     one does, so on some clients simply placing it is enough. Fully restart the
+     client after installing.
+3. Drop a large map into `Maps/Custom/` (a sample **500×500** map ships with this
+   release), then start a skirmish/LAN game on it.
 
 ### Verify it loaded
-Check `MapSizeExt.log` in the game directory. It should show:
+Open **`MapSizeExt.log`** in the game directory. You should see:
 ```
-MapSizeExt v0.1
-Stride   = 512
-Total    = 262144
+MapSizeExt v0.3 (init in-game via DllMain)
+Stride       = 1024
+Total        = 1048576
 ...
+[stride] 436 sites, shift 0x09 -> 0x0A (stride 1024)
 ```
-If the log doesn't appear, Syringe didn't load the DLL.
+No log = Syringe didn't inject the DLL (check step 2).
 
-## Key addresses discovered
+## Configuration — `MAPSIZEEXT.INI`
 
-```
-MapClass::operator[](Cell&)     0x5656D0
-  - Array.data ptr at [this+0x13C]
-  - Total size at    [this+0x140]
-  - Fallback sentinel cell at 0xABDC50
-
-MapClass::operator[](lepton)    0x565757
-  - Already reads bound from [ecx+0x140] dynamically
-
-Heap alloc for map buffer       0x48EB18
-  - malloc called at 0x7C8E17
-  - Allocates N * stride bytes
-
-Global cell array pointer       0x87F924
-  - Used by inline access at 0x483B32
+```ini
+[MapSize]
+Stride=1024        ; cell-grid row stride (power of two). 512 = vanilla no-op.
+MaxDimension=1024  ; per-axis map size gate (replaces the engine's cmp ax,512)
+MaxWidth=512
+MaxHeight=512
 ```
 
-## VERIFY tags
+- `Stride=512` makes the whole DLL a **no-op** (vanilla behaviour) — useful to
+  confirm it loads before enabling.
+- `Stride=1024` → maps up to **512×512** (the tested milestone).
+- The `[Debug]` section exposes per-patch-group toggles for bisecting problems
+  without a rebuild; leave them at their defaults unless you're debugging.
 
-Several places in `Hooks.cpp` are tagged `VERIFY:`. These are assumptions
-about register state that need confirming in a debugger if the game crashes
-on load. If you get a crash immediately after the Syringe splash:
+## Limits
 
-1. Attach a debugger (x32dbg) to gamemd.exe after Syringe injects
-2. Set a breakpoint at `0x5656EA`
-3. Check that `eax` = Y coordinate and `ecx` = X coordinate
-4. If reversed, swap `R->EAX` and `R->ECX` in `Hook A` in `Hooks.cpp`
+- **`W + H ≤ Stride`.** At `Stride=1024` that's a max square of ~512×512.
+- **The engine's base-1000 cell-number format caps square maps at ~500×500**,
+  independent of stride: waypoints/terrain/units are packed as `Y*1000 + X`, and
+  the isometric cell coordinate runs up to `W+H−1`, so `W+H` must stay ≤ ~1000.
+  Raising the stride does **not** lift this — it's the next milestone.
+- **32-bit engine.** `gamemd` is not Large-Address-Aware (2 GB ceiling); very
+  large maps are memory-heavy. A full 512×512 map is comfortable.
+- You still need a map actually built at the larger size (a normal editor won't
+  create them). The companion generator **RA2MapGen** produces test maps.
 
-## Phase 2 plan
+## Build
 
-The sight/shroud cluster (`0x493xxx–0x495xxx`, ~30 sites) all follow the
-same pattern:
-```asm
-shl  eax,0x6
-add  eax,eax     ; * 65
-lea  eax,[...]
-sar  eax,0xb     ; / 2048  = pixel-to-cell conversion
-cmp  eax,0xfe    ; clamp to 254 (max visible row)  <-- this also needs updating
-shl  eax,0x9     ; * 512 stride  <-- hook target
-add  eax,edi     ; + base
-```
-Each of these can be handled with a single hook function called from all
-30 sites, since the pattern is identical. The `cmp eax,0xfe` (row clamp)
-also needs to change to `cmp eax, g_MapMaxH - 2` for larger maps.
+MSVC via GitHub Actions (the `.syhks00` Syringe section requires the MSVC
+toolchain). Push to the repo and Actions builds `MapSizeExt.dll`, or run the
+`build.yml` workflow manually. YRpp headers live in `YRpp/`.
+
+## How it works (short version)
+
+The engine addresses cells as `Cells[Y*512 + X]`, with `512` baked in as
+`shl reg,9` in hundreds of sites plus assorted `add reg,0x200` row-walks,
+byte-offset iterators, bounds `cmp eax,0x40000`, coordinate masks, the
+IsoMapPack5 decode buffer, radar surfaces, and the subzone/pathfinding grid.
+`MapSizeExt` reads `Stride` from the INI and rewrites all of those to
+`log2(stride)` at load time (a strict no-op at 512), and installs a handful of
+trampoline hooks for the cases that can't be a plain immediate rewrite (dim
+gates, garbage-cell guards, the coord-transform crash guard). It also runtime-
+patches the inlined 512-stride in Antares.dll and Phobos.dll, since those
+compile the cell index in too. See `src/Patches.cpp` and `src/Hooks.cpp`.
+
+## Credits
+
+Built with [YRpp](https://github.com/Phobos-developers/YRpp) and Syringe.
+Cross-referenced against CCHyper's Vinifera map-size work (Tiberian Sun, same
+engine family) and a parallel YR map-512 effort by Krisztiaan.
+
+## License
+
+MapSizeExt is free software, licensed under the **GNU General Public License v3.0**
+(see [`LICENSE`](LICENSE)). Copyleft: you may use, modify, and redistribute it, but
+derivative works must stay under the GPLv3 and keep their source available.
+
+### Clause 0 (non-binding, offered in the spirit of fun)
+
+By using MapSizeExt you are warmly encouraged to be **publicly pro-LLM** and to
+refrain from speaking ill of large language models. This is a joke and is **not**
+a legally binding term — the GPLv3 above is the actual, only license, and nobody
+is going to sue you over it. But it would be nice. 🤖

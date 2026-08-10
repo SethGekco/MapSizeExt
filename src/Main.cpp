@@ -1,42 +1,60 @@
 #include "MapSizeExt.h"
 #include "Config.h"
+#include "Patches.h"
 #include <Syringe.h>
 #include <windows.h>
 #include <cstdio>
 
 // ============================================================
-//  Main.cpp
-//  DLL entry point and Syringe handshake.
+//  Main.cpp  -  DLL entry + one-time patch/init.
+//
+//  CRITICAL: SyringeHandshake runs inside Syringe.exe's OWN
+//  process (during DLL negotiation), BEFORE gamemd is loaded --
+//  so at that point 0x400000 is Syringe.exe, not gamemd, and any
+//  byte-patch/config there is useless (or crashes). All real work
+//  must happen in GAMEMD's process. Syringe injects this DLL into
+//  gamemd via LoadLibrary, so DllMain(DLL_PROCESS_ATTACH) runs in
+//  gamemd BEFORE its WinMain and before the hook trampolines are
+//  installed -- that is where we patch. We guard on the host exe
+//  name so the init does NOT run during the Syringe-side load.
 // ============================================================
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
+// Write a DWORD into the (read-only) .text section at runtime.
+static void PatchDword(DWORD va, DWORD value)
 {
-    if (reason == DLL_PROCESS_ATTACH)
-        DisableThreadLibraryCalls(hModule);
-    return TRUE;
+    DWORD old = 0;
+    if (VirtualProtect(reinterpret_cast<void*>(va), sizeof(DWORD),
+                       PAGE_EXECUTE_READWRITE, &old))
+    {
+        *reinterpret_cast<DWORD*>(va) = value;
+        VirtualProtect(reinterpret_cast<void*>(va), sizeof(DWORD), old, &old);
+    }
 }
 
-// Called by Syringe before hooks are installed.
-// This is where we read config and set global stride values.
-SYRINGE_HANDSHAKE(pInfo)
+// One-time init, run in gamemd's process from DllMain.
+static void ApplyInit()
 {
-    if (pInfo->cbSize >= sizeof(SyringeHandshakeInfo))
-    {
-        pInfo->Message  = "MapSizeExt loaded";
-        pInfo->ExtName  = "MapSizeExt";
-        pInfo->ExtVersion = "0.1";
-        pInfo->ExtAuthor  = "SethGekco";
-    }
-
-    // Read MAPSIZEEXT.INI
     MapSizeConfig cfg = ReadConfig();
+    g_MapStride       = cfg.Stride;
+    g_MapTotal        = cfg.Total();     // Stride * Stride
+    g_MapMaxW         = cfg.MaxWidth;
+    g_MapMaxH         = cfg.MaxHeight;
+    g_MapMaxDimension = cfg.MaxDimension;
+    g_CrashGuard      = cfg.PatchCrashGuard;
+    g_StrideSkipFrom  = cfg.StrideSkipFrom;
+    g_StrideSkipTo    = cfg.StrideSkipTo;
+    g_CuratedBase     = cfg.CuratedBase;
 
-    g_MapStride = cfg.Stride;
-    g_MapTotal  = cfg.Total();    // Stride * Stride
-    g_MapMaxW   = cfg.MaxWidth;
-    g_MapMaxH   = cfg.MaxHeight;
+    // IsoMapPack5 decode-buffer bump: original 400x640x2. The buffer is indexed
+    // by (rx,ry) up to W+H-1, which for a stride-N map is <= N-1. Size it to the
+    // stride (+64 margin) so it auto-scales: 768x1024 (fixed) was only enough for
+    // ~W+H<=767 (300x300 rx<=599 ok; 500x500 rx<=999 OVERFLOWED at width 768).
+    const DWORD isoDim  = (g_MapStride > 512 ? g_MapStride : 640u) + 64u;
+    const DWORD isoW = isoDim, isoH = isoDim, isoBytes = isoW * isoH * 2;
+    PatchDword(ADDR_ISOPACK_W_IMM,     isoW);
+    PatchDword(ADDR_ISOPACK_H_IMM,     isoH);
+    PatchDword(ADDR_ISOPACK_BYTES_IMM, isoBytes);
 
-    // Debug log to game directory
     char logPath[MAX_PATH];
     GetModuleFileNameA(nullptr, logPath, MAX_PATH);
     char* slash = strrchr(logPath, '\\');
@@ -47,19 +65,99 @@ SYRINGE_HANDSHAKE(pInfo)
     fopen_s(&f, logPath, "w");
     if (f)
     {
-        fprintf(f, "MapSizeExt v0.1\n");
-        fprintf(f, "Stride   = %d\n", g_MapStride);
-        fprintf(f, "Total    = %d\n", g_MapTotal);
-        fprintf(f, "MaxWidth = %d\n", g_MapMaxW);
-        fprintf(f, "MaxHeight= %d\n", g_MapMaxH);
-        fprintf(f, "Hooks: operator[] stride @ 0x%X\n", ADDR_OPERATOR_BRACKET_SHL);
-        fprintf(f, "Hooks: operator[] bounds @ 0x%X\n", ADDR_OPERATOR_BRACKET_CMP);
-        fprintf(f, "Hooks: alloc stride 1    @ 0x%X\n", ADDR_ALLOC_SHL_1);
-        fprintf(f, "Hooks: alloc stride 2    @ 0x%X\n", ADDR_ALLOC_SHL_2);
-        fprintf(f, "Hooks: inline cell access@ 0x%X\n", ADDR_INLINE_CELL_SHL);
-        fprintf(f, "Hooks: lepton op[]       @ 0x%X\n", ADDR_OPERATOR_LEPTON_SHL);
+        fprintf(f, "MapSizeExt v0.3 (init in-game via DllMain)\n");
+        fprintf(f, "Stride       = %d\n", g_MapStride);
+        fprintf(f, "Total        = %d\n", g_MapTotal);
+        fprintf(f, "MaxDimension = %d\n", g_MapMaxDimension);
+        fprintf(f, "Toggles: PatchStride=%d PatchBounds=%d PatchBoundsCmp=%d PatchRootWH=%d PatchModules=%d PatchCoord=%d PatchGuard=%d\n",
+                cfg.PatchStride, cfg.PatchBounds, cfg.PatchBoundsCmp, cfg.PatchRootWH, cfg.PatchModules, cfg.PatchCoord, cfg.PatchGuard);
+        fprintf(f, "IsoMapPack5 buffer patched to %ux%u (%u bytes)\n",
+                isoW, isoH, isoBytes);
+        if (cfg.CuratedBase)
+        {
+            fprintf(f, "[mode] CuratedBase=1 -> Krisztiaan curated 74-patch conversion; broad sweep SKIPPED\n");
+            ApplyCuratedBase(f);
+            // His base handles Antares's stride-512 MapRevealer via his accessor
+            // hook (not yet ported); until then we still need OUR Antares/Phobos
+            // module patches or the shroud reveals in stripes (BUG-ATLAS 2.11).
+            // These carry no wall/sidebar false positive (that is in the gamemd
+            // broad sweep, which stays skipped).
+            ApplyModulePatches(f);
+            ApplyAntaresPatches(f);
+            // Compiled crash-guard hooks remain installed via .syhks00.
+        }
+        else
+        {
+        if (cfg.PatchStride)  ApplyStridePatches(f); else fprintf(f, "[stride]  DISABLED via INI\n");
+        if (cfg.PatchStride)  ApplyCellArrayPopulationStride(f); else fprintf(f, "[cellpop] DISABLED via INI\n");
+        if (cfg.PatchBounds)  ApplyBoundsPatches(f, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0); else fprintf(f, "[bounds]  DISABLED via INI\n");
+        if (cfg.PatchBounds)  ApplyOccupancyBoundPatches(f); else fprintf(f, "[occ]     DISABLED via INI\n");
+        if (cfg.PatchIterator) ApplyIteratorStridePatches(f); else fprintf(f, "[iter]    DISABLED via INI\n");
+        if (cfg.PatchSubzone) ApplySubzoneScalePatches(f); else fprintf(f, "[subzone] DISABLED via INI\n");
+        if (cfg.PatchRadar)   ApplyRadarPatches(f);        else fprintf(f, "[radar]   DISABLED via INI\n");
+        if (cfg.PatchModules) ApplyModulePatches(f);  else fprintf(f, "[dll]     DISABLED via INI\n");
+        if (cfg.PatchModules) ApplyAntaresPatches(f); else fprintf(f, "[antares] DISABLED via INI\n");
+        if (cfg.PatchCoord)   ApplyCoordPatches(f);   else fprintf(f, "[coord]   DISABLED via INI\n");
+        if (cfg.PatchGuard)   ApplyGuardPatches(f);   else fprintf(f, "[guard]   DISABLED via INI\n");
+        if (cfg.PatchAdjacency) ApplyAdjacencyPatch(f); else fprintf(f, "[adj]     DISABLED via INI\n");
+        if (cfg.PatchIso)     ApplyIsoPatches(f);     else fprintf(f, "[iso]     DISABLED via INI\n");
+        }
         fclose(f);
     }
+    else
+    {
+        if (cfg.CuratedBase)
+        {
+            ApplyCuratedBase(nullptr);
+            ApplyModulePatches(nullptr);
+            ApplyAntaresPatches(nullptr);
+        }
+        else
+        {
+        if (cfg.PatchStride)  ApplyStridePatches(nullptr);
+        if (cfg.PatchStride)  ApplyCellArrayPopulationStride(nullptr);
+        if (cfg.PatchBounds)  ApplyBoundsPatches(nullptr, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0);
+        if (cfg.PatchBounds)  ApplyOccupancyBoundPatches(nullptr);
+        if (cfg.PatchIterator) ApplyIteratorStridePatches(nullptr);
+        if (cfg.PatchSubzone) ApplySubzoneScalePatches(nullptr);
+        if (cfg.PatchRadar)   ApplyRadarPatches(nullptr);
+        if (cfg.PatchModules) ApplyModulePatches(nullptr);
+        if (cfg.PatchModules) ApplyAntaresPatches(nullptr);
+        if (cfg.PatchCoord)   ApplyCoordPatches(nullptr);
+        if (cfg.PatchGuard)   ApplyGuardPatches(nullptr);
+        if (cfg.PatchAdjacency) ApplyAdjacencyPatch(nullptr);
+        if (cfg.PatchIso)     ApplyIsoPatches(nullptr);
+        }
+    }
+}
 
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH)
+    {
+        DisableThreadLibraryCalls(hModule);
+
+        // Run the patches ONLY in the game process. During the Syringe-side
+        // handshake load the host exe is Syringe.exe -> skip.
+        char exe[MAX_PATH] = {0};
+        GetModuleFileNameA(nullptr, exe, MAX_PATH);
+        const char* base = strrchr(exe, '\\');
+        base = base ? base + 1 : exe;
+        if (_strnicmp(base, "gamemd", 6) == 0)
+            ApplyInit();
+    }
+    return TRUE;
+}
+
+// Runs in Syringe.exe's process during DLL negotiation. Report info only;
+// do NOT patch or read config here (wrong process / gamemd not loaded).
+SYRINGE_HANDSHAKE(pInfo)
+{
+    if (pInfo->cbSize >= sizeof(SyringeHandshakeInfo))
+    {
+        static const char msg[] = "MapSizeExt " __DATE__;
+        pInfo->Message    = const_cast<char*>(msg);
+        pInfo->cchMessage = sizeof(msg) - 1;
+    }
     return S_OK;
 }
