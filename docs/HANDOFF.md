@@ -73,6 +73,20 @@ base.** Two bugs remain:
    (`CellClass_AttachesToNeighbourOverlay` 0x480534) works; the GuardRange
    straight-line auto-fill between two placed wall sections does not at 1024.
 
+### ⚠️ FORK (2026-08-10): buildLines only fills LINKABLE walls (firewall/trench)
+`BuildingTypeExt::IsLinkable() = Firewall_Is || (IsTrench > -1)`
+(`Antares-src/src/Ext/BuildingType/Body.cpp:461`). The deployed mod's `[NAWALL]`
+has `Wall=yes`, `GuardRange=12`, but **NO IsTrench/Firewall** → `isLinkable()`
+false → `buildLines` returns early and does NOT fill NAWALL gaps. So the whole
+buildLines trace below, while it verified Antares' cell math is 1024-correct, is
+**the wrong path for regular NAWALL**. Either (a) the user's tested walls ARE
+trench/firewall (then buildLines applies + the runtime-data bug), or (b) NAWALL
+gap-fill is a **vanilla gamemd** feature (find that fn) — or it never actually
+filled for NAWALL. NEED USER CONFIRMATION: does NAWALL specifically fill gaps, and
+did it at 512? gamemd wall-fill hooks Ares adds: KickOutUnit_Firewall @0x445355,
+UnitFromFactory_Firewall @0x4FB257 (both call buildLines, return 0 = continue
+gamemd).
+
 ### ★ WALL LINE-FILL ROOT-CAUSE TRACE (2026-08-10) — biggest progress ever on walls
 The line-fill is **reimplemented in Antares** as `BuildingExt::buildLines`
 (`Antares-src/src/Ext/Building/Body.cpp:350`; PDB S_PUB32 seg1:0x173D0). It:
