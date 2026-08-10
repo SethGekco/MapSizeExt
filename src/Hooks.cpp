@@ -178,10 +178,13 @@ DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 // ============================================================
 DEFINE_HOOK(48EB12, MapClass_Alloc_Stride1, 6)
 {
-    if (g_CuratedBase) return 0;   // his conversion sizes this buffer itself; defer
-    int dim = *reinterpret_cast<int*>(R->ESI() + 0x16C);
-    R->EDX(dim * g_MapStride);
-    return 0x48EB1B;  // push edx
+    // DEFER ALWAYS (§2.14): this shl-9 is NOT the cell plane -- it is a
+    // shroud/visibility buffer row size. Sizing it to *1024 over-sizes a shared
+    // draw/palette buffer -> BRIGHT sidebar cameos (broad mode) and the curated
+    // stripe. Leaving the original N*512 (native) fixes the sidebar; the cell
+    // plane itself is sized by the dimension patches (0x565812/828), not here.
+    return 0;
+    // (was: int dim=[esi+0x16C]; R->EDX(dim*g_MapStride); return 0x48EB1B;)
 }
 
 // ============================================================
@@ -193,9 +196,10 @@ DEFINE_HOOK(48EB12, MapClass_Alloc_Stride1, 6)
 // ============================================================
 DEFINE_HOOK(48EB35, MapClass_Alloc_Stride2, 5)
 {
-    if (g_CuratedBase) return 0;   // paired with 0x48EB12; defer in curated mode
-    R->ECX(R->ECX() * g_MapStride + R->EAX());
-    return 0x48EB3A;  // mov [esi+0x174],ecx
+    // DEFER ALWAYS -- paired with 0x48EB12 (see there). Original N*512 mid-row
+    // pointer keeps the shroud buffer native-sized -> correct sidebar / no stripe.
+    return 0;
+    // (was: R->ECX(R->ECX()*g_MapStride + R->EAX()); return 0x48EB3A;)
 }
 
 // ============================================================
