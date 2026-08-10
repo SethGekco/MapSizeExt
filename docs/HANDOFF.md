@@ -102,6 +102,33 @@ regressions.
 | `e0cc8938` | skip 73 Antares `shl` patches (bisection) | **RULED OUT**: walls stayed broken AND shroud striped + movement/AIBaseSpacing broke → Antares shl are load-bearing (shroud/tactical/AI cell math), NOT the wall FP |
 | `1191a18980b3` | restore Antares `shl` (`g_skip_antares_shl=0`) | back to healthy state; walls line-fill still the open issue |
 
+### ★ SYMBOL MAP FOUND (use this from now on)
+`/home/rex/Claude/Antares/gamemd_names_from_antares_pdb.txt` = 1464 named gamemd
+functions from the Antares PDB. **grep it before disassembling.** (memory:
+[[gamemd-pdb-symbol-map]].) Partial set; sub-labels are points inside a larger fn.
+
+### Function leads for the 2 open bugs (from the symbol map)
+**Unit-exit / FreeUnit** (units idle on exit cell; NAREFN free HARV missing):
+- `0x445F80 BuildingClass_Place`; `0x446E9F BuildingClass_Place_FreeUnit_Mission`;
+  `0x446AAF ..._SkipFreeUnits`; `0x446EE2 ..._InitialPayload`.
+- `BuildingClass_KickOutUnit_*` family @0x443CCA-0x445355 (one big KickOutUnit):
+  `_FindAlternateKickout` 0x4444E2, `_Infantry` 0x444DBC, `_UnitType` 0x444119,
+  `_ArmoryExitBug` 0x444D26.
+- `0x51D0DD InfantryClass_Scatter`; `0x51C4C8 InfantryClass_IsCellOccupied`;
+  `0x73F7B0 UnitClass_IsCellOccupied`; `0x7441B6 UnitClass_MarkOccupationBits`.
+- **Checked so far, NO inline stride site:** FindAlternateKickout (list iter),
+  FreeUnit_Mission (virtual calls + create), MarkOccupationBits (calls patched
+  GetCellAt 0x565730 + height helper 0x578080), Scatter (uses a per-FACING flag
+  table 0x7EAF7C, not cell offsets). So these use the shared *patched* accessors —
+  the bug is a coordinate/mission/occupancy interaction, NOT a raw 512 index.
+  Next: probe KickOutUnit's exit-destination coord + FreeUnit placement coord to
+  see if an off-map/(0,0) destination is produced.
+
+**Wall `GuardRange` line-fill**: no separately-named fn; lives inside
+`0x445F80 BuildingClass_Place` (or a helper it calls). `0x480534
+CellClass_AttachesToNeighbourOverlay` = adjacency (works). Next: probe inside
+BuildingClass_Place during a wall placement to find the straight-line scan.
+
 ### Wall line-fill — narrowing so far (still open)
 Confirmed NOT the cause: cell-plane stride (probe: all lookups correct), the
 Antares shl patches (bisected out — needed for shroud/movement/AI), and `0x483B32`
