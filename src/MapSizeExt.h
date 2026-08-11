@@ -71,6 +71,20 @@ extern int g_MapMaxH;           // max map height (default 512)
 extern int g_MapMaxDimension;   // per-axis gate: replaces cmp ax,0x200.
 extern int g_CrashGuard;        // 1 = GetCellAt garbage-slot guard active (INI PatchCrashGuard)
 
+// Per-map cell-number packing base. Vanilla map INIs pack a cell as N = Y*1000 + X
+// (base 1000), which caps the low coord (iso rx) below 1000 -> W+H <= 1000 (~500x500)
+// regardless of stride. Big maps carry a [MapSizeExt] CoordBase=<pow2> key and pack
+// N = Y*base + X; we decode with the same base. Set per-map at waypoint read; 1000
+// (absent key / vanilla) == unchanged behaviour. See Hooks.cpp Waypoint_CoordBaseDecode.
+extern int g_CoordBase;
+
+// --- Vanilla [Waypoints] reader cell-number decode (base 1000) ----
+// 68BE0C: mov ebp,0x3e8 ; idiv -> X=N%1000, then Y=N/1000 recomputed via the
+// 0x10624dd3 magic. We replace the whole decode with a CoordBase-aware one.
+#define ADDR_WAYPOINT_DECODE        0x68BE0C
+// INIClass::GetInt(this, section, key, default)  (__thiscall, returns int)
+#define ADDR_INICLASS_GETINT        0x5276D0
+
 // Bisection: skip kCellStrideSites indices [g_StrideSkipFrom, g_StrideSkipTo)
 // in ApplyStridePatches (leave them at stride 512), to hunt the wall false
 // positive by binary search via INI without rebuilding. 0,0 = skip nothing.
