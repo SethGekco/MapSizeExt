@@ -362,6 +362,55 @@ DEFINE_HOOK(68BE0C, Waypoint_CoordBaseDecode, 5)
 }
 
 // ============================================================
+//  TIBERIUM per-type buffer realloc guard + diagnostic  (fn @0x722D00)
+//
+//  On map (re)load the engine reallocates, for EACH tiberium type in the global
+//  TiberiumClass array [0xB0F4EC] (count [0xB0F4F8]), three map-area-sized buffers:
+//    [obj+0x110] a VectorClass, COUNT*4+4 bytes, zero-filled by a loop @0x722E19
+//    [obj+0x114] COUNT bytes,  [obj+0x118] COUNT*8 bytes
+//  where COUNT = (MapRect.Height+4) * MapRect.Width * 2  (fn 0x42B1F0, dims at
+//  0x87F8DC/0x87F8E0). The +0x110 buffer malloc @0x722E01 is UNCHECKED -> if it
+//  returns null the zero-fill @0x722E19 writes through null (the C0000005 that
+//  blocks big maps). This is the fill loop head (xor eax,eax / cmp count / jl):
+//    722E0F: xor eax,eax   722E11: cmp ecx,ebx   722E13: jl 0x722E28
+//  Guard it: skip the fill when the buffer is null (turn the crash into graceful
+//  empty-ore), and log MapRect/COUNT/buffer once so we can tell an INFLATED COUNT
+//  (sizing bug) from a genuine allocation failure (32-bit OOM). esi = the vector
+//  struct ([+4]=COUNT, [+8]=buffer). Resume 0x722E15 (fill) with eax=0, else 0x722E28.
+DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
+{
+    char* self  = reinterpret_cast<char*>(R->ESI());
+    int   count = *reinterpret_cast<int*>(self + 4);
+    void* buf   = *reinterpret_cast<void**>(self + 8);
+
+    if (g_MapStride > 512)
+    {
+        static int n = 0;
+        if (n < 8)
+        {
+            ++n;
+            int rw = *reinterpret_cast<int*>(0x87F8DC);   // MapRect.Width
+            int rh = *reinterpret_cast<int*>(0x87F8E0);   // MapRect.Height
+            char p[MAX_PATH];
+            GetModuleFileNameA(nullptr, p, MAX_PATH);
+            char* s = strrchr(p, '\\'); if (s) *(s + 1) = '\0';
+            strcat_s(p, "MapSizeExt.log");
+            FILE* f = nullptr; fopen_s(&f, p, "a");
+            if (f)
+            {
+                fprintf(f, "[tiberium] MapRect=%dx%d COUNT=%d bytes=%d buffer=%p%s\n",
+                        rw, rh, count, count * 4 + 4, buf, buf ? "" : "  <-- NULL (alloc failed)");
+                fclose(f);
+            }
+        }
+    }
+
+    if (!buf || count <= 0) return 0x722E28;   // crash guard: skip the fill
+    R->EAX(0);                                 // replicate the stolen 'xor eax,eax'
+    return 0x722E15;                           // resume the zero-fill loop
+}
+
+// ============================================================
 //  Radar minimap null-guard (Stride > 512).
 //  At stride > 512 the radar surface CREATION path is gated out
 //  (its computed minimap dims go degenerate), so the two radar
