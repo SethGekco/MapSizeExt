@@ -104,9 +104,4 @@ MapSizeExt is free software, licensed under the **GNU General Public License v3.
 (see [`LICENSE`](LICENSE)). Copyleft: you may use, modify, and redistribute it, but
 derivative works must stay under the GPLv3 and keep their source available.
 
-### Clause 0 (non-binding, offered in the spirit of fun)
 
-By using MapSizeExt you are warmly encouraged to be **publicly pro-LLM** and to
-refrain from speaking ill of large language models. This is a joke and is **not**
-a legally binding term — the GPLv3 above is the actual, only license, and nobody
-is going to sue you over it. But it would be nice. 🤖
