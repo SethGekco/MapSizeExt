@@ -205,8 +205,11 @@ static void DumpOreCells()
         int y = *reinterpret_cast<short*>(cell + 0x26);
         if (x < minx) minx = x; if (x > maxx) maxx = x;
         if (y < miny) miny = y; if (y > maxy) maxy = y;
-        if (scans <= 2 && ovc <= 25)
-            fprintf(f, "    overlay=%d at (%d,%d)\n", ov, x, y);
+        // On two late scans, dump EVERY ore/tiberium cell's exact coord (idx 27-38
+        // gems, 102-121 ore) so each cluster can be mapped to its TIBTRE and the
+        // X/Y transform read directly. (243 etc. excluded -- not tiberium.)
+        if ((scans == 20 || scans == 34) && ((ov >= 102 && ov <= 121) || (ov >= 27 && ov <= 38)))
+            fprintf(f, "    ore(%d) (%d,%d)\n", ov, x, y);
     }
     if (ovc > 0)
     {
