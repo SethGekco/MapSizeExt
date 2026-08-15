@@ -163,20 +163,17 @@ static void DumpOreCells()
 {
     if (g_MapStride <= 512) return;
     static long long calls = 0;
-    if ((++calls & 0x3FF) != 0) return;        // cheap gate: ~1-in-1024 calls
+    if ((++calls & 0xFFF) != 0) return;        // cheap gate: ~1-in-4096 calls
 
     static DWORD lastTick = 0;
     static int   scans = 0;
-    if (scans >= 12) return;
+    if (scans >= 20) return;
     DWORD now = GetTickCount();
     if (lastTick != 0 && now - lastTick < 3000) return;   // at most ~every 3s
-
-    void** items = *reinterpret_cast<void***>(0x87F7E8 + 0x13C);   // Cells.Items
-    if (!items) return;
-    DWORD arrBase = *reinterpret_cast<DWORD*>(0xA83D84);           // OverlayTypeClass array
-    if (arrBase < 0x400000 || arrBase >= 0x40000000) return;
     lastTick = now; ++scans;
 
+    // Open the file FIRST so it always appears (proves the scan ran) and shows the
+    // pointers we depend on.
     char path[MAX_PATH];
     GetModuleFileNameA(nullptr, path, MAX_PATH);
     char* slash = strrchr(path, '\\'); if (slash) *(slash + 1) = '\0';
@@ -184,31 +181,41 @@ static void DumpOreCells()
     FILE* f = nullptr; fopen_s(&f, path, scans == 1 ? "w" : "a");
     if (!f) return;
 
+    void** items = *reinterpret_cast<void***>(0x87F7E8 + 0x13C);   // Cells.Items
+    fprintf(f, "[scan %d @%ums] items=%p total=%d\n", scans, now, (void*)items, g_MapTotal);
+    if (!items) { fprintf(f, "  -> items null, abort\n"); fclose(f); return; }
+
+    // Scan every valid cell for ANY overlay (cell+0x44, -1 = none). Histogram the
+    // overlay index and track the bounding box of overlay-bearing cells. Ore is by
+    // far the most common overlay on an ore map, so the bbox ~= where ore sits, and
+    // the histogram identifies the exact ore index -- no OverlayTypeClass lookup needed.
     int total = g_MapTotal;
-    int ore = 0, minx = 1 << 30, maxx = -(1 << 30), miny = 1 << 30, maxy = -(1 << 30);
+    int ovc = 0, minx = 1 << 30, maxx = -(1 << 30), miny = 1 << 30, maxy = -(1 << 30);
+    int hist[256]; for (int k = 0; k < 256; ++k) hist[k] = 0;
     for (int i = 0; i < total; ++i)
     {
         char* cell = reinterpret_cast<char*>(items[i]);
         DWORD cp = reinterpret_cast<DWORD>(cell);
         if (cp < 0x04000000 || cp >= 0x40000000) continue;         // null / garbage-corner slot
         int ov = *reinterpret_cast<int*>(cell + 0x44);             // OverlayTypeIndex (-1 = none)
-        if (ov < 0 || ov > 4000) continue;
-        DWORD ot = *reinterpret_cast<DWORD*>(arrBase + ov * 4);    // OverlayTypeClass*
-        if (ot < 0x400000 || ot >= 0x40000000) continue;
-        if (*reinterpret_cast<unsigned char*>(ot + 0x2A9) == 0) continue;   // not tiberium
+        if (ov < 0) continue;
+        ++ovc;
+        if (ov >= 0 && ov < 256) ++hist[ov];
         int x = *reinterpret_cast<short*>(cell + 0x24);
         int y = *reinterpret_cast<short*>(cell + 0x26);
-        ++ore;
         if (x < minx) minx = x; if (x > maxx) maxx = x;
         if (y < miny) miny = y; if (y > maxy) maxy = y;
-        if (scans == 1 && ore <= 30)
-            fprintf(f, "  ore cell: (%d,%d)\n", x, y);
+        if (scans <= 2 && ovc <= 25)
+            fprintf(f, "    overlay=%d at (%d,%d)\n", ov, x, y);
     }
-    if (ore > 0)
-        fprintf(f, "[scan %d @%ums] %d ore cells  X[%d..%d] Y[%d..%d]\n",
-                scans, now, ore, minx, maxx, miny, maxy);
-    else
-        fprintf(f, "[scan %d @%ums] no ore found yet\n", scans, now);
+    if (ovc > 0)
+    {
+        fprintf(f, "  -> %d overlay cells  X[%d..%d] Y[%d..%d]\n", ovc, minx, maxx, miny, maxy);
+        fprintf(f, "     overlay-index histogram (idx:count):");
+        for (int k = 0; k < 256; ++k) if (hist[k]) fprintf(f, " %d:%d", k, hist[k]);
+        fprintf(f, "\n");
+    }
+    else fprintf(f, "  -> no overlay cells found yet\n");
     fclose(f);
 }
 
