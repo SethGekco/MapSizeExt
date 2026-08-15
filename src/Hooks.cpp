@@ -163,13 +163,13 @@ static void DumpOreCells()
 {
     if (g_MapStride <= 512) return;
     static long long calls = 0;
-    if ((++calls & 0xFFF) != 0) return;        // cheap gate: ~1-in-4096 calls
+    if ((++calls & 0x3F) != 0) return;         // cheap gate: ~1-in-64 calls (reached fast)
 
     static DWORD lastTick = 0;
     static int   scans = 0;
-    if (scans >= 20) return;
+    if (scans >= 40) return;
     DWORD now = GetTickCount();
-    if (lastTick != 0 && now - lastTick < 3000) return;   // at most ~every 3s
+    if (lastTick != 0 && now - lastTick < 2000) return;   // at most ~every 2s
     lastTick = now; ++scans;
 
     // Open the file FIRST so it always appears (proves the scan ran) and shows the
@@ -178,7 +178,7 @@ static void DumpOreCells()
     GetModuleFileNameA(nullptr, path, MAX_PATH);
     char* slash = strrchr(path, '\\'); if (slash) *(slash + 1) = '\0';
     strcat_s(path, "MapSizeExt_ore.log");
-    FILE* f = nullptr; fopen_s(&f, path, scans == 1 ? "w" : "a");
+    FILE* f = nullptr; fopen_s(&f, path, "a");   // append (tiberium hook created it at load)
     if (!f) return;
 
     void** items = *reinterpret_cast<void***>(0x87F7E8 + 0x13C);   // Cells.Items
@@ -313,6 +313,7 @@ DEFINE_HOOK(565757, MapClass_LeptonOp_Stride, 5)
     R->EDX(R->EDX<int>() * g_MapStride + R->ESI<int>());
     DumpMapStateOnce();  // diagnostic (once) - hot during pan/render
     DumpVisibleCellsLighting();  // lighting probe (once)
+    DumpOreCells();      // ore scan (this hook is render-hot -> fires every frame)
     return 0x56575C;  // js 0x56577a
 }
 
@@ -472,6 +473,18 @@ DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
                 fprintf(f, "[tiberium] MapRect=%dx%d COUNT=%d bytes=%d buffer=%p%s\n",
                         rw, rh, count, count * 4 + 4, buf, buf ? "" : "  <-- NULL (alloc failed)");
                 fclose(f);
+            }
+            // GUARANTEE the ore log exists from map load (before any ore grows), so a
+            // missing file always means a code/trigger fault, never "just no ore yet".
+            // The periodic DumpOreCells() (render-hot lepton hook) then APPENDS scans.
+            if (n == 1)
+            {
+                char op[MAX_PATH];
+                GetModuleFileNameA(nullptr, op, MAX_PATH);
+                char* os = strrchr(op, '\\'); if (os) *(os + 1) = '\0';
+                strcat_s(op, "MapSizeExt_ore.log");
+                FILE* of = nullptr; fopen_s(&of, op, "w");
+                if (of) { fprintf(of, "== ore log created at map load (MapRect=%dx%d). Scans append below as ore grows ==\n", rw, rh); fclose(of); }
             }
         }
     }
