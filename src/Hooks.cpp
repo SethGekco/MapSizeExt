@@ -411,6 +411,49 @@ DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
 }
 
 // ============================================================
+//  ORE DIAGNOSTIC (temporary) — WHERE does the engine think ore is?
+//
+//  The tiberium ore-cell-list builder sub_7233A0 walks the map (via the cell
+//  iterator) and, for each cell whose overlay is THIS tiberium type, records it.
+//  At 0x72342E: edi = that confirmed ore cell, esi = the tiberium object. We log
+//  the cell's REAL MapCoords (cell+0x24 = X, +0x26 = Y). This runs per-frame as
+//  ore grows, so we SAMPLE (1-in-31 records, cap 200) to capture the evolving
+//  distribution rather than just the first frame. If the logged coords cluster in
+//  the top / halved-Y band, ore is being placed through a stride-512 cell index
+//  (the "(X, Y/2)" fold the YRpp-inline GetCellIndex causes on stride-1024 maps)
+//  -> the root cause of "ore only grows in the top-right quarter". Writes
+//  MapSizeExt_ore.log.
+//
+//  Stolen bytes: 0x72342E `mov edx,[esi+0x10c]` (6) — the loop needs edx at
+//  0x723443 (`mov [eax+edx*8],edi`), so we replicate it. Resume 0x723434.
+DEFINE_HOOK(72342E, Tiberium_OreCellDiag, 6)
+{
+    char* self = reinterpret_cast<char*>(R->ESI());
+    char* cell = reinterpret_cast<char*>(R->EDI());
+
+    if (g_MapStride > 512)
+    {
+        static long calls = 0;
+        static int  logged = 0;
+        if ((calls++ % 31) == 0 && logged < 200)
+        {
+            ++logged;
+            short X = *reinterpret_cast<short*>(cell + 0x24);
+            short Y = *reinterpret_cast<short*>(cell + 0x26);
+            char p[MAX_PATH];
+            GetModuleFileNameA(nullptr, p, MAX_PATH);
+            char* s = strrchr(p, '\\'); if (s) *(s + 1) = '\0';
+            strcat_s(p, "MapSizeExt_ore.log");
+            FILE* f = nullptr; fopen_s(&f, p, logged == 1 ? "w" : "a");
+            if (f) { fprintf(f, "ore cell #%d: X=%d Y=%d\n", logged, (int)X, (int)Y); fclose(f); }
+        }
+    }
+
+    R->EDX(*reinterpret_cast<int*>(self + 0x10C));  // replicate `mov edx,[esi+0x10c]`
+    return 0x723434;
+}
+
+// ============================================================
 //  Radar minimap null-guard (Stride > 512).
 //  At stride > 512 the radar surface CREATION path is gated out
 //  (its computed minimap dims go degenerate), so the two radar
