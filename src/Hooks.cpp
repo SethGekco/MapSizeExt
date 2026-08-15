@@ -149,6 +149,69 @@ static void DumpVisibleCellsLighting()
     fclose(f);
 }
 
+// ============================================================
+//  ORE DIAGNOSTIC (temporary) — scan the WHOLE cell array for ore.
+//  The ore-list-builder hook missed because ore GROWS incrementally (no full
+//  rebuild), so instead we observe the RESULT directly: walk MapClass.Cells.Items[]
+//  and for each valid cell read its overlay index (cell+0x44, -1 = none) and test
+//  the OverlayTypeClass IsTiberium flag (*(OverlayTypeClass[idx] + 0x2A9)). Log the
+//  count + bounding box of every ore cell (and the first 30 exact coords). If ore
+//  clusters in a tight upper/top-right band, the stride-512 (X, Y/2) fold is
+//  confirmed. Self-throttled: a cheap 1-in-1024 counter, then GetTickCount so it
+//  scans ~every 3s (cap 12) to capture ore as it grows. Writes MapSizeExt_ore.log.
+static void DumpOreCells()
+{
+    if (g_MapStride <= 512) return;
+    static long long calls = 0;
+    if ((++calls & 0x3FF) != 0) return;        // cheap gate: ~1-in-1024 calls
+
+    static DWORD lastTick = 0;
+    static int   scans = 0;
+    if (scans >= 12) return;
+    DWORD now = GetTickCount();
+    if (lastTick != 0 && now - lastTick < 3000) return;   // at most ~every 3s
+
+    void** items = *reinterpret_cast<void***>(0x87F7E8 + 0x13C);   // Cells.Items
+    if (!items) return;
+    DWORD arrBase = *reinterpret_cast<DWORD*>(0xA83D84);           // OverlayTypeClass array
+    if (arrBase < 0x400000 || arrBase >= 0x40000000) return;
+    lastTick = now; ++scans;
+
+    char path[MAX_PATH];
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    char* slash = strrchr(path, '\\'); if (slash) *(slash + 1) = '\0';
+    strcat_s(path, "MapSizeExt_ore.log");
+    FILE* f = nullptr; fopen_s(&f, path, scans == 1 ? "w" : "a");
+    if (!f) return;
+
+    int total = g_MapTotal;
+    int ore = 0, minx = 1 << 30, maxx = -(1 << 30), miny = 1 << 30, maxy = -(1 << 30);
+    for (int i = 0; i < total; ++i)
+    {
+        char* cell = reinterpret_cast<char*>(items[i]);
+        DWORD cp = reinterpret_cast<DWORD>(cell);
+        if (cp < 0x04000000 || cp >= 0x40000000) continue;         // null / garbage-corner slot
+        int ov = *reinterpret_cast<int*>(cell + 0x44);             // OverlayTypeIndex (-1 = none)
+        if (ov < 0 || ov > 4000) continue;
+        DWORD ot = *reinterpret_cast<DWORD*>(arrBase + ov * 4);    // OverlayTypeClass*
+        if (ot < 0x400000 || ot >= 0x40000000) continue;
+        if (*reinterpret_cast<unsigned char*>(ot + 0x2A9) == 0) continue;   // not tiberium
+        int x = *reinterpret_cast<short*>(cell + 0x24);
+        int y = *reinterpret_cast<short*>(cell + 0x26);
+        ++ore;
+        if (x < minx) minx = x; if (x > maxx) maxx = x;
+        if (y < miny) miny = y; if (y > maxy) maxy = y;
+        if (scans == 1 && ore <= 30)
+            fprintf(f, "  ore cell: (%d,%d)\n", x, y);
+    }
+    if (ore > 0)
+        fprintf(f, "[scan %d @%ums] %d ore cells  X[%d..%d] Y[%d..%d]\n",
+                scans, now, ore, minx, maxx, miny, maxy);
+    else
+        fprintf(f, "[scan %d @%ums] no ore found yet\n", scans, now);
+    fclose(f);
+}
+
 DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 {
     // NOTE: needed at 1024 even in curated mode -- deferring it (M2) broke the
@@ -160,6 +223,7 @@ DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 
     DumpMapStateOnce();           // MapClass::Instance dimension dump (diagnostic, once)
     DumpVisibleCellsLighting();   // TacticalClass VisibleCells LightConvert probe (once, late)
+    DumpOreCells();               // scan cell array for ore, ~every 3s x12 (ore-bug probe)
 
     if (index < 0)             return 0x565709;  // js  (negative)
     if (index >= g_MapTotal)   return 0x565709;  // cmp/jge (out of bounds)
