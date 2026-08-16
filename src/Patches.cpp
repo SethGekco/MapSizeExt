@@ -747,6 +747,28 @@ int ApplyPhobosPatches(FILE* log)
         kPhobosAnd1ff2, kPhobosAnd1ff2_n, kPhobosSar2, kPhobosSar2_n, log);
 }
 
+// Phobos "Customizable Ore Spawners" (src/Ext/TerrainType/Hooks.cpp,
+// CellClass_SpreadTiberium_CellSpread) reimplements the TIBTRE ore spawn and picks
+// the target cell with MapClass::TryGetCellAt(tgtPos) -- a YRpp INLINE GetCellIndex
+// = (Y<<9)+X (stride 512) baked into Phobos.dll, with the MaxCells bound cmp ,0x3FFFF.
+// This site postdates our curated kPhobosShl(48), so it stays x512 -> ore for a tree
+// at (X,Y) is written to Cells[Y*512+X] = cell (X, Y/2) (measured: ore Y = TIBTRE Y/2).
+// Patch the shl 9->log2(stride) AND the bound 0x3FFFF->stride^2-1 together (unfolding
+// Y alone would push high-Y indices past the old bound and drop the ore). Byte-verified,
+// so a different Phobos build that doesn't match is skipped, not corrupted. Export
+// CellClass_SpreadTiberium_CellSpread @ Phobos RVA 0xA8C00; shl @0xA8C95, cmp @0xA8C9C.
+static int ApplyPhobosOreSpawnerFix(int shift, DWORD total, FILE* log)
+{
+    HMODULE h = GetModuleHandleA("Phobos.dll");
+    if (!h) return 0;
+    const DWORD base = reinterpret_cast<DWORD>(h);
+    int n = 0;
+    n += PatchShiftC1(base + 0xA8C95, static_cast<BYTE>(shift));   // shl ecx,9 -> shl ecx,shift
+    n += PatchImm32(base + 0xA8C9C, 2, 0x3FFFF, total - 1);        // cmp ebx,0x3FFFF -> stride^2-1
+    if (log) fprintf(log, "[dll] Phobos ore-spawner TryGetCellAt @0xA8C95/9C: shl+bound %d/2\n", n);
+    return n;
+}
+
 int ApplyModulePatches(FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);
@@ -799,6 +821,7 @@ int ApplyModulePatches(FILE* log)
                          M.name, base, ns, M.nshl, nc, M.ncmp, na, M.nand, nr, M.nsar);
         grand += ns + nc + na + nr;
     }
+    grand += ApplyPhobosOreSpawnerFix(shift, total, log);   // ore-spawn Y-fold (top-right ore)
     return grand;
 }
 
