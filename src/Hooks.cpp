@@ -149,78 +149,6 @@ static void DumpVisibleCellsLighting()
     fclose(f);
 }
 
-// ============================================================
-//  ORE DIAGNOSTIC (temporary) — scan the WHOLE cell array for ore.
-//  The ore-list-builder hook missed because ore GROWS incrementally (no full
-//  rebuild), so instead we observe the RESULT directly: walk MapClass.Cells.Items[]
-//  and for each valid cell read its overlay index (cell+0x44, -1 = none) and test
-//  the OverlayTypeClass IsTiberium flag (*(OverlayTypeClass[idx] + 0x2A9)). Log the
-//  count + bounding box of every ore cell (and the first 30 exact coords). If ore
-//  clusters in a tight upper/top-right band, the stride-512 (X, Y/2) fold is
-//  confirmed. Self-throttled: a cheap 1-in-1024 counter, then GetTickCount so it
-//  scans ~every 3s (cap 12) to capture ore as it grows. Writes MapSizeExt_ore.log.
-static void DumpOreCells()
-{
-    if (g_MapStride <= 512) return;
-    static long long calls = 0;
-    if ((++calls & 0x3F) != 0) return;         // cheap gate: ~1-in-64 calls (reached fast)
-
-    static DWORD lastTick = 0;
-    static int   scans = 0;
-    if (scans >= 40) return;
-    DWORD now = GetTickCount();
-    if (lastTick != 0 && now - lastTick < 2000) return;   // at most ~every 2s
-    lastTick = now; ++scans;
-
-    // Open the file FIRST so it always appears (proves the scan ran) and shows the
-    // pointers we depend on.
-    char path[MAX_PATH];
-    GetModuleFileNameA(nullptr, path, MAX_PATH);
-    char* slash = strrchr(path, '\\'); if (slash) *(slash + 1) = '\0';
-    strcat_s(path, "MapSizeExt_ore.log");
-    FILE* f = nullptr; fopen_s(&f, path, "a");   // append (tiberium hook created it at load)
-    if (!f) return;
-
-    void** items = *reinterpret_cast<void***>(0x87F7E8 + 0x13C);   // Cells.Items
-    fprintf(f, "[scan %d @%ums] items=%p total=%d\n", scans, now, (void*)items, g_MapTotal);
-    if (!items) { fprintf(f, "  -> items null, abort\n"); fclose(f); return; }
-
-    // Scan every valid cell for ANY overlay (cell+0x44, -1 = none). Histogram the
-    // overlay index and track the bounding box of overlay-bearing cells. Ore is by
-    // far the most common overlay on an ore map, so the bbox ~= where ore sits, and
-    // the histogram identifies the exact ore index -- no OverlayTypeClass lookup needed.
-    int total = g_MapTotal;
-    int ovc = 0, minx = 1 << 30, maxx = -(1 << 30), miny = 1 << 30, maxy = -(1 << 30);
-    int hist[256]; for (int k = 0; k < 256; ++k) hist[k] = 0;
-    for (int i = 0; i < total; ++i)
-    {
-        char* cell = reinterpret_cast<char*>(items[i]);
-        DWORD cp = reinterpret_cast<DWORD>(cell);
-        if (cp < 0x04000000 || cp >= 0x40000000) continue;         // null / garbage-corner slot
-        int ov = *reinterpret_cast<int*>(cell + 0x44);             // OverlayTypeIndex (-1 = none)
-        if (ov < 0) continue;
-        ++ovc;
-        if (ov >= 0 && ov < 256) ++hist[ov];
-        int x = *reinterpret_cast<short*>(cell + 0x24);
-        int y = *reinterpret_cast<short*>(cell + 0x26);
-        if (x < minx) minx = x; if (x > maxx) maxx = x;
-        if (y < miny) miny = y; if (y > maxy) maxy = y;
-        // On two late scans, dump EVERY ore/tiberium cell's exact coord (idx 27-38
-        // gems, 102-121 ore) so each cluster can be mapped to its TIBTRE and the
-        // X/Y transform read directly. (243 etc. excluded -- not tiberium.)
-        if ((scans == 20 || scans == 34) && ((ov >= 102 && ov <= 121) || (ov >= 27 && ov <= 38)))
-            fprintf(f, "    ore(%d) (%d,%d)\n", ov, x, y);
-    }
-    if (ovc > 0)
-    {
-        fprintf(f, "  -> %d overlay cells  X[%d..%d] Y[%d..%d]\n", ovc, minx, maxx, miny, maxy);
-        fprintf(f, "     overlay-index histogram (idx:count):");
-        for (int k = 0; k < 256; ++k) if (hist[k]) fprintf(f, " %d:%d", k, hist[k]);
-        fprintf(f, "\n");
-    }
-    else fprintf(f, "  -> no overlay cells found yet\n");
-    fclose(f);
-}
 
 DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 {
@@ -233,7 +161,6 @@ DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 
     DumpMapStateOnce();           // MapClass::Instance dimension dump (diagnostic, once)
     DumpVisibleCellsLighting();   // TacticalClass VisibleCells LightConvert probe (once, late)
-    DumpOreCells();               // scan cell array for ore, ~every 3s x12 (ore-bug probe)
 
     if (index < 0)             return 0x565709;  // js  (negative)
     if (index >= g_MapTotal)   return 0x565709;  // cmp/jge (out of bounds)
@@ -316,7 +243,6 @@ DEFINE_HOOK(565757, MapClass_LeptonOp_Stride, 5)
     R->EDX(R->EDX<int>() * g_MapStride + R->ESI<int>());
     DumpMapStateOnce();  // diagnostic (once) - hot during pan/render
     DumpVisibleCellsLighting();  // lighting probe (once)
-    DumpOreCells();      // ore scan (this hook is render-hot -> fires every frame)
     return 0x56575C;  // js 0x56577a
 }
 
@@ -477,18 +403,6 @@ DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
                         rw, rh, count, count * 4 + 4, buf, buf ? "" : "  <-- NULL (alloc failed)");
                 fclose(f);
             }
-            // GUARANTEE the ore log exists from map load (before any ore grows), so a
-            // missing file always means a code/trigger fault, never "just no ore yet".
-            // The periodic DumpOreCells() (render-hot lepton hook) then APPENDS scans.
-            if (n == 1)
-            {
-                char op[MAX_PATH];
-                GetModuleFileNameA(nullptr, op, MAX_PATH);
-                char* os = strrchr(op, '\\'); if (os) *(os + 1) = '\0';
-                strcat_s(op, "MapSizeExt_ore.log");
-                FILE* of = nullptr; fopen_s(&of, op, "w");
-                if (of) { fprintf(of, "== ore log created at map load (MapRect=%dx%d). Scans append below as ore grows ==\n", rw, rh); fclose(of); }
-            }
         }
     }
 
@@ -497,48 +411,6 @@ DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
     return 0x722E15;                           // resume the zero-fill loop
 }
 
-// ============================================================
-//  ORE DIAGNOSTIC (temporary) — WHERE does the engine think ore is?
-//
-//  The tiberium ore-cell-list builder sub_7233A0 walks the map (via the cell
-//  iterator) and, for each cell whose overlay is THIS tiberium type, records it.
-//  At 0x72342E: edi = that confirmed ore cell, esi = the tiberium object. We log
-//  the cell's REAL MapCoords (cell+0x24 = X, +0x26 = Y). This runs per-frame as
-//  ore grows, so we SAMPLE (1-in-31 records, cap 200) to capture the evolving
-//  distribution rather than just the first frame. If the logged coords cluster in
-//  the top / halved-Y band, ore is being placed through a stride-512 cell index
-//  (the "(X, Y/2)" fold the YRpp-inline GetCellIndex causes on stride-1024 maps)
-//  -> the root cause of "ore only grows in the top-right quarter". Writes
-//  MapSizeExt_ore.log.
-//
-//  Stolen bytes: 0x72342E `mov edx,[esi+0x10c]` (6) — the loop needs edx at
-//  0x723443 (`mov [eax+edx*8],edi`), so we replicate it. Resume 0x723434.
-DEFINE_HOOK(72342E, Tiberium_OreCellDiag, 6)
-{
-    char* self = reinterpret_cast<char*>(R->ESI());
-    char* cell = reinterpret_cast<char*>(R->EDI());
-
-    if (g_MapStride > 512)
-    {
-        static long calls = 0;
-        static int  logged = 0;
-        if ((calls++ % 31) == 0 && logged < 200)
-        {
-            ++logged;
-            short X = *reinterpret_cast<short*>(cell + 0x24);
-            short Y = *reinterpret_cast<short*>(cell + 0x26);
-            char p[MAX_PATH];
-            GetModuleFileNameA(nullptr, p, MAX_PATH);
-            char* s = strrchr(p, '\\'); if (s) *(s + 1) = '\0';
-            strcat_s(p, "MapSizeExt_ore.log");
-            FILE* f = nullptr; fopen_s(&f, p, logged == 1 ? "w" : "a");
-            if (f) { fprintf(f, "ore cell #%d: X=%d Y=%d\n", logged, (int)X, (int)Y); fclose(f); }
-        }
-    }
-
-    R->EDX(*reinterpret_cast<int*>(self + 0x10C));  // replicate `mov edx,[esi+0x10c]`
-    return 0x723434;
-}
 
 // ============================================================
 //  Radar minimap null-guard (Stride > 512).
