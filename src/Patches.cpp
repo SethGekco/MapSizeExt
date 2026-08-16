@@ -747,25 +747,57 @@ int ApplyPhobosPatches(FILE* log)
         kPhobosAnd1ff2, kPhobosAnd1ff2_n, kPhobosSar2, kPhobosSar2_n, log);
 }
 
-// Phobos "Customizable Ore Spawners" (src/Ext/TerrainType/Hooks.cpp,
-// CellClass_SpreadTiberium_CellSpread) reimplements the TIBTRE ore spawn and picks
-// the target cell with MapClass::TryGetCellAt(tgtPos) -- a YRpp INLINE GetCellIndex
-// = (Y<<9)+X (stride 512) baked into Phobos.dll, with the MaxCells bound cmp ,0x3FFFF.
-// This site postdates our curated kPhobosShl(48), so it stays x512 -> ore for a tree
-// at (X,Y) is written to Cells[Y*512+X] = cell (X, Y/2) (measured: ore Y = TIBTRE Y/2).
-// Patch the shl 9->log2(stride) AND the bound 0x3FFFF->stride^2-1 together (unfolding
-// Y alone would push high-Y indices past the old bound and drop the ore). Byte-verified,
-// so a different Phobos build that doesn't match is skipped, not corrupted. Export
-// CellClass_SpreadTiberium_CellSpread @ Phobos RVA 0xA8C00; shl @0xA8C95, cmp @0xA8C9C.
-static int ApplyPhobosOreSpawnerFix(int shift, DWORD total, FILE* log)
+// Phobos compiles YRpp's inline MapClass::TryGetCellAt / GetCellAt into many hooks:
+//   GetCellIndex = (Y<<9)+X  (stride 512), then a MaxCells bound `cmp idx,0x3FFFF ; ja`,
+//   then the cell fetch `Cells.Items[idx]` = `mov reg,[MapClass+0x13C] ; [reg+idx*4]`.
+// Our curated kPhobosShl(48) was derived against an OLDER Phobos and misses every
+// GetCellIndex added since (Customizable Ore Spawners was the one that folded ore to
+// (X, Y/2); an audit found 12 more -- bullet trajectories, missile targeting, crate
+// placement, deploy, radiation sites, save). Rather than hardcode build-specific RVAs
+// (which go stale on every Phobos update -- exactly what caused this), SCAN Phobos.dll's
+// .text at load for the full pattern and patch shift+bound on any site whose shift is
+// STILL 0x09 (i.e. not already covered by kPhobosShl -- those run first and are left
+// untouched). The three-part signature (shl9 + 0x3FFFF bound + [+0x13C] Cells.Items)
+// is specific to real cell indices, so it never touches the non-cell shl9 that broke
+// pathfinding when the whole list was patched blindly. Everything is byte-verified.
+static int ApplyPhobosCellIndexScan(int shift, DWORD total, FILE* log)
 {
     HMODULE h = GetModuleHandleA("Phobos.dll");
     if (!h) return 0;
-    const DWORD base = reinterpret_cast<DWORD>(h);
+    BYTE* base = reinterpret_cast<BYTE*>(h);
+    BYTE* nt = base + *reinterpret_cast<DWORD*>(base + 0x3C);
+    const int nsec = *reinterpret_cast<WORD*>(nt + 6);
+    BYTE* sec = nt + 0x18 + *reinterpret_cast<WORD*>(nt + 0x14);
+    BYTE* t0 = nullptr; BYTE* t1 = nullptr;
+    for (int i = 0; i < nsec; ++i)
+    {
+        BYTE* s = sec + i * 40;
+        if (memcmp(s, ".text", 5) == 0)
+        {
+            t0 = base + *reinterpret_cast<DWORD*>(s + 12);
+            t1 = t0 + *reinterpret_cast<DWORD*>(s + 8);   // VirtualSize
+            break;
+        }
+    }
+    if (!t0) return 0;
+
     int n = 0;
-    n += PatchShiftC1(base + 0xA8C95, static_cast<BYTE>(shift));   // shl ecx,9 -> shl ecx,shift
-    n += PatchImm32(base + 0xA8C9C, 2, 0x3FFFF, total - 1);        // cmp ebx,0x3FFFF -> stride^2-1
-    if (log) fprintf(log, "[dll] Phobos ore-spawner TryGetCellAt @0xA8C95/9C: shl+bound %d/2\n", n);
+    for (BYTE* p = t0; p + 48 < t1; ++p)
+    {
+        if (p[0] != 0xC1 || p[1] < 0xE0 || p[1] > 0xE7 || p[2] != 0x09) continue;  // shl reg,9 (only unpatched)
+        BYTE* bnd = nullptr;                                        // cmp idx,0x3FFFF within 20 bytes
+        for (BYTE* q = p + 3; q < p + 23; ++q)
+            if (q[0]==0xFF && q[1]==0xFF && q[2]==0x03 && q[3]==0x00) { bnd = q; break; }
+        if (!bnd) continue;
+        bool cells = false;                                        // Cells.Items [reg+0x13C] within ~40 bytes
+        for (BYTE* q = bnd; q + 4 < p + 48; ++q)
+            if (q[0]==0x3C && q[1]==0x01 && q[2]==0x00 && q[3]==0x00) { cells = true; break; }
+        if (!cells) continue;
+        int did = PatchShiftC1(reinterpret_cast<DWORD>(p), static_cast<BYTE>(shift));   // 9 -> shift
+        PatchImm32(reinterpret_cast<DWORD>(bnd), 0, 0x3FFFF, total - 1);                // 0x3FFFF -> stride^2-1
+        n += did;
+    }
+    if (log) fprintf(log, "[dll] Phobos GetCellIndex scan: patched %d newer cell-index sites (ore spawner + others)\n", n);
     return n;
 }
 
@@ -821,7 +853,7 @@ int ApplyModulePatches(FILE* log)
                          M.name, base, ns, M.nshl, nc, M.ncmp, na, M.nand, nr, M.nsar);
         grand += ns + nc + na + nr;
     }
-    grand += ApplyPhobosOreSpawnerFix(shift, total, log);   // ore-spawn Y-fold (top-right ore)
+    grand += ApplyPhobosCellIndexScan(shift, total, log);   // ore spawner + 12 other newer GetCellIndex sites
     return grand;
 }
 
