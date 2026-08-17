@@ -363,6 +363,102 @@ DEFINE_HOOK(68BE0C, Waypoint_CoordBaseDecode, 5)
 }
 
 // ============================================================
+//  SPAWN DIAGNOSTIC: pinpoint where big-map MP starts go garbage (stride>512)
+//
+//  The 2048 spawn hang: the MP-start assigner (~0x6884D5) reads Scenario.Waypoints
+//  (*(0xA8B230)+0x632, array[702] of packed cells) and finds garbage (last seen =
+//  0x0087F7E8, the MapClass::Instance pointer) -> no valid start -> infinite search
+//  -> black screen. Static tracing is ambiguous: INIClass_ReadScenario DOES call
+//  the vanilla reader 0x68BDC0 at 0x6873DB (writes Waypoints from [Waypoints], our
+//  CoordBase hook decodes it), but then a loop @0x6873F4 OVERWRITES Waypoints[0..7]
+//  with Scenario+0x11C0[0..7] when flag Scenario+0x34BD is set. The 0x11C0 offset
+//  aliases across unrelated structs so its filler can't be pinned statically.
+//
+//  This read-only probe snapshots the whole chain in ONE run. Hook point 0x687410
+//  = `mov 0x887048,%edx` (6B), immediately AFTER the copy loop, so we see the final
+//  Waypoints[0..7] the assigner will read, the source table, and the copy flag.
+//  Logs once. Gated stride>512 so it is a strict no-op on vanilla-size play.
+DEFINE_HOOK(687410, Spawn_WaypointDiag, 6)
+{
+    if (g_MapStride > 512)
+    {
+        static bool logged = false;
+        if (!logged)
+        {
+            logged = true;
+            char* scen = *reinterpret_cast<char**>(0xA8B230);
+            char p[MAX_PATH];
+            GetModuleFileNameA(nullptr, p, MAX_PATH);
+            char* s = strrchr(p, '\\'); if (s) *(s + 1) = '\0';
+            strcat_s(p, "MapSizeExt.log");
+            FILE* f = nullptr; fopen_s(&f, p, "a");
+            if (f)
+            {
+                fprintf(f, "[spawndiag] Scenario=%p CoordBase=%d copyFlag(0x34BD)=%d\n",
+                        (void*)scen, g_CoordBase, scen ? (int)(unsigned char)scen[0x34BD] : -1);
+                if (scen)
+                {
+                    unsigned* wp  = reinterpret_cast<unsigned*>(scen + 0x632);
+                    unsigned* src = reinterpret_cast<unsigned*>(scen + 0x11C0);
+                    for (int i = 0; i < 8; ++i)
+                    {
+                        unsigned w = wp[i], t = src[i];
+                        // decode packed cell as low/high word (engine stores X=low,Y=high)
+                        fprintf(f, "[spawndiag]  #%d  Waypoints[0x632]=%08X (X=%d Y=%d)   Src[0x11C0]=%08X (X=%d Y=%d)\n",
+                                i, w, (short)(w & 0xFFFF), (short)(w >> 16),
+                                   t, (short)(t & 0xFFFF), (short)(t >> 16));
+                    }
+                }
+                fclose(f);
+            }
+        }
+    }
+    return 0;   // continue normally (read-only probe)
+}
+
+// Second probe: the MP-start assigner itself (fn @0x688380, hang loop scans
+// Waypoints at 0x6883B7 / 0x688455). Hook 0x68839A = `mov 0xa8b230,%edx` (6B,
+// post-prologue) so we log what the assigner ACTUALLY reads -- this fires even if
+// INIClass_ReadScenario / the 0x687410 probe is bypassed in the CnCNet flow. The
+// engine's empty-slot sentinel X is the word at 0xB05458; we flag matches.
+DEFINE_HOOK(68839A, Spawn_AssignerDiag, 6)
+{
+    if (g_MapStride > 512)
+    {
+        static bool logged = false;
+        if (!logged)
+        {
+            logged = true;
+            char* scen = *reinterpret_cast<char**>(0xA8B230);
+            unsigned short sentinel = *reinterpret_cast<unsigned short*>(0xB05458);
+            char p[MAX_PATH];
+            GetModuleFileNameA(nullptr, p, MAX_PATH);
+            char* s = strrchr(p, '\\'); if (s) *(s + 1) = '\0';
+            strcat_s(p, "MapSizeExt.log");
+            FILE* f = nullptr; fopen_s(&f, p, "a");
+            if (f)
+            {
+                fprintf(f, "[assigner] Scenario=%p sentinelX=%04X -- Waypoints the assigner scans:\n",
+                        (void*)scen, sentinel);
+                if (scen)
+                {
+                    unsigned* wp = reinterpret_cast<unsigned*>(scen + 0x632);
+                    for (int i = 0; i < 8; ++i)
+                    {
+                        unsigned w = wp[i];
+                        fprintf(f, "[assigner]  #%d = %08X  X=%d Y=%d %s\n",
+                                i, w, (short)(w & 0xFFFF), (short)(w >> 16),
+                                (unsigned short)(w & 0xFFFF) == sentinel ? "(empty)" : "");
+                    }
+                }
+                fclose(f);
+            }
+        }
+    }
+    return 0;   // read-only probe
+}
+
+// ============================================================
 //  TIBERIUM per-type buffer realloc guard + diagnostic  (fn @0x722D00)
 //
 //  On map (re)load the engine reallocates, for EACH tiberium type in the global
