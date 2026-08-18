@@ -957,16 +957,35 @@ DEFINE_HOOK(5657CF, CellLookup_Fail_GetCellAt, 6)
 //  byte-identical in behavior. Deferred same-class siblings (not in the order
 //  path): 0x4AD232/0x4ADC17 (Display text/waypoint parse), 0x71CAEF (forest
 //  fire jump) -- revisit if their features misbehave on CoordBase maps.
+// CLICK-vs-ORDER TRACER (2026-08-18, user-requested): every encode logs
+// cell -> number, every decode logs number -> cell. Clicking around with the
+// waypoint tool then yields a paired trace; a decode with no matching encode
+// (or coords that differ) fingers a FOREIGN codec (Phobos/Antares planning
+// code) and its arithmetic. Shared cap keeps the log bounded.
+static bool TraceBudget()
+{
+    static int n = 0;
+    return ++n <= 600;
+}
 DEFINE_HOOK(6E6B51, CellTarget_Encode1_CoordBase, 6)
 {
     if (g_CoordBase <= 1000) return 0;
-    R->ECX(R->ECX() * (DWORD)(g_CoordBase >> 3));   // ecx=Y -> Y*(base/8)
+    const DWORD y = R->ECX(), x = R->EDX();
+    if (TraceBudget())
+        DeployDiagLog("ENC1 (%d,%d) -> %u\n", (int)x, (int)y, x + y * (DWORD)g_CoordBase);
+    R->ECX(y * (DWORD)(g_CoordBase >> 3));          // ecx=Y -> Y*(base/8)
     return 0x6E6B5A;                                // lea ecx,[edx+ecx*8]; store
 }
 DEFINE_HOOK(6E6B89, CellTarget_Encode2_CoordBase, 6)
 {
     if (g_CoordBase <= 1000) return 0;
-    R->EDI(R->EAX() * (DWORD)(g_CoordBase >> 3));   // eax=Y -> edi=Y*(base/8)
+    const int y = (int)R->EAX();
+    if (TraceBudget())
+    {
+        const int xlep = *reinterpret_cast<int*>(R->ESI());     // coord.X leptons
+        DeployDiagLog("ENC2 (%d,%d)\n", xlep >> 8, y);
+    }
+    R->EDI((DWORD)y * (DWORD)(g_CoordBase >> 3));   // eax=Y -> edi=Y*(base/8)
     return 0x6E6B92;                                // X conv; lea eax,[eax+edi*8]
 }
 // Vanilla parity (user-verified behavior): an off-map order travels to the
@@ -1001,6 +1020,7 @@ DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
     int rx = (int)(N % b), ry = (int)(N / b);
     ClampCellToMap(rx, ry);
+    if (TraceBudget()) DeployDiagLog("DEC1 %u -> (%d,%d)\n", N, rx, ry);
     *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E6EE5)
     R->EDX((DWORD)ry);                                          // Y; tail: eax=edx,shr 31(=0),add
     return 0x6E6EEF;
@@ -1011,6 +1031,7 @@ DEFINE_HOOK(6E7C2C, CellTarget_Decode2_CoordBase, 5)
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
     int rx = (int)(N % b), ry = (int)(N / b);
     ClampCellToMap(rx, ry);
+    if (TraceBudget()) DeployDiagLog("DEC2 %u -> (%d,%d)\n", N, rx, ry);
     *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E7C39)
     R->EDX((DWORD)ry);
     return 0x6E7C43;
@@ -1036,6 +1057,7 @@ DEFINE_HOOK(4AD232, CellNum_Decode_Display_CoordBase, 5)
 {
     if (g_CoordBase <= 1000) return 0;
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
+    if (TraceBudget()) DeployDiagLog("DSP  %u -> (%u,%u)\n", N, N % b, N / b);
     *reinterpret_cast<short*>(R->ESP() + 0x60) = (short)(N % b);   // X (orig @0x4AD23F)
     R->EDX(N / b);                                                 // Y
     return 0x4AD249;
@@ -1045,6 +1067,7 @@ DEFINE_HOOK(4ADC17, CellNum_Decode_WaypointList_CoordBase, 5)
     if (g_CoordBase <= 1000) return 0;
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
     R->ESI(R->ESI() + 4);                                          // replicate skipped add esi,4
+    if (TraceBudget()) DeployDiagLog("WPL  %u -> (%u,%u) idx=%d\n", N, N % b, N / b, (int)R->EBX());
     *reinterpret_cast<short*>(R->ESP() + 0x18) = (short)(N % b);   // X (orig @0x4ADC26)
     R->EDX(N / b);                                                 // Y
     return 0x4ADC30;
