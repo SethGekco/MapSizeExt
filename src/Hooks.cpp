@@ -848,16 +848,17 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
         // "Walk on water" => a unit standing on visual water shows LT != 2 (LandType
         // mis-assigned) OR LT==2 but pathing proceeds anyway (zone/pathfinder bug).
         // Stuck-on-ramp => same (sx,sy) repeats with a higher-Level neighbour.
+        int tx = *reinterpret_cast<short*>(esp + 0x8);
+        int ty = *reinterpret_cast<short*>(esp + 0xA);
         DWORD c = CellAt(sx, sy);
         int L   = c ? (int)*reinterpret_cast<signed char*>(c + 0x11B) : -99;
         int LT  = c ? *reinterpret_cast<int*>(c + 0xEC) : -99;
-        int sl  = c ? (int)*reinterpret_cast<unsigned char*>(c + 0x11C) : -99;
-        int iso = c ? *reinterpret_cast<int*>(c + 0x38) : -99;
-        DeployDiagLog("PATH 0x%X start(%d,%d) L=%d LT=%d slope=%d iso=%d  nbrLT[%d %d %d %d %d %d %d %d]\n",
-                      R->ECX(), sx, sy, L, LT, sl, iso,
-                      LandTypeAt(sx-1,sy-1), LandTypeAt(sx,sy-1), LandTypeAt(sx+1,sy-1),
-                      LandTypeAt(sx-1,sy),                        LandTypeAt(sx+1,sy),
-                      LandTypeAt(sx-1,sy+1), LandTypeAt(sx,sy+1), LandTypeAt(sx+1,sy+1));
+        // TARGET is the key datum for the "bottom-right orders go top-left" bug:
+        // if the pathfinder is ASKED with a folded target, the fold is upstream
+        // (click -> order -> event pipeline); if the target here is correct, the
+        // fold is inside pathfinding/zone lookup. Log start AND target.
+        DeployDiagLog("PATH 0x%X start(%d,%d) -> TGT(%d,%d) L=%d LT=%d\n",
+                      R->ECX(), sx, sy, tx, ty, L, LT);
     }
     R->EAX(0x1F9C);          // replicate mov eax,0x1f9c
     return 0x4D3925;
