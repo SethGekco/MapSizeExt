@@ -1017,6 +1017,40 @@ DEFINE_HOOK(6E7C2C, CellTarget_Decode2_CoordBase, 5)
 }
 
 // ============================================================
+//  DISPLAYCLASS CELL-NUMBER DECODERS (the waypoint/planning feature, 2048).
+//
+//  The recon catalogued SIX base-1000 idiv cell decoders. The event codec pair
+//  (0x6E6ED0/0x6E7C20) is patched above; the waypoint READER 0x68BE0C is owned
+//  by the Phobos fix. These two DisplayClass decoders were deferred as "text
+//  parse" -- WRONG: 0x4ADC17 is a loop decoding (index, packed-cell) pairs into
+//  Scenario waypoint slots via the setter @0x68BF50 = the waypoint/planning
+//  path decode, and 0x4AD232 is its sibling (same dual-format decode, gated on
+//  the scenario-format flag @0xA8ED7C). Left at base-1000 they decode our
+//  base-2048 numbers as Y ~= 2*Y -> planned paths point past the SE corner /
+//  opposite directions (user-observed via the waypoint feature 2026-08-18).
+//  Same hook shape as the codec decoders; the div/magic tails add +0 for Y>=0.
+//  (Sixth decoder 0x71CAEF, forest-fire/random: an `add esp,4` sits inside the
+//  hook window and R->ESP writes don't survive Syringe's popad -- deferred, not
+//  order-related.)
+DEFINE_HOOK(4AD232, CellNum_Decode_Display_CoordBase, 5)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
+    *reinterpret_cast<short*>(R->ESP() + 0x60) = (short)(N % b);   // X (orig @0x4AD23F)
+    R->EDX(N / b);                                                 // Y
+    return 0x4AD249;
+}
+DEFINE_HOOK(4ADC17, CellNum_Decode_WaypointList_CoordBase, 5)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
+    R->ESI(R->ESI() + 4);                                          // replicate skipped add esi,4
+    *reinterpret_cast<short*>(R->ESP() + 0x18) = (short)(N % b);   // X (orig @0x4ADC26)
+    R->EDX(N / b);                                                 // Y
+    return 0x4ADC30;
+}
+
+// ============================================================
 //  DUMMY-DESTINATION WRITE TRAP (the human-order decode bug, stride 2048).
 //
 //  The 3-site Phobos coord-cell fix did NOT cure it: clicked units still get
