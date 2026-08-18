@@ -989,6 +989,33 @@ static int ApplyPlanningBasePatches(FILE* log)
     return 0;
 }
 
+// ============================================================
+//  A* pathfinder node-pool widening (the delayed heap-corruption crash).
+//
+//  Root cause (memory: mapsizeext-astar-pool-overflow; crash snapshot
+//  2026-08-18 110213, C0000005 @0x42A525): the pathfinder's node allocator
+//  @0x42A460 uses two heap pools whose COUNTERS live AT the buffer end --
+//  pool A: 16-byte nodes, counter at base+0x100000 (65,536 cap);
+//  pool B: 12-byte entries, counter at base+0x180000 (131,072 cap) --
+//  with NO bounds check. Big-map searches overflow pool A; the node written
+//  at slot 65,536 lands exactly on the counter, the next allocation goes
+//  wild, and a heap object gets corrupted (the FactoryClass vtable
+//  low-byte hits, the wild-EIP fatals). Fix: widen both pools 8x --
+//  allocations @0x42A7E0/0x42A814 and ALL 10 hardcoded offset sites.
+static int ApplyAStarPoolPatches(FILE* log)
+{
+    if (g_MapStride <= 512) { if (log) fprintf(log, "[astar]   pools stay vanilla  [no-op]\n"); return 0; }
+    static const DWORD kPoolA[] = { 0x42A466, 0x42A479, 0x42A5C3, 0x42A80A, 0x42A840 };
+    static const DWORD kPoolB[] = { 0x42A482, 0x42A48C, 0x42A5B9, 0x42A828, 0x42A835 };
+    int n = 0;
+    for (int i = 0; i < 5; ++i) n += PatchImm32(kPoolA[i], 2, 0x100000, 0x800000);
+    for (int i = 0; i < 5; ++i) n += PatchImm32(kPoolB[i], 2, 0x180000, 0xC00000);
+    n += PatchImm32(0x42A7E0, 1, 0x100004, 0x800004);   // push: pool A alloc size
+    n += PatchImm32(0x42A814, 1, 0x180004, 0xC00004);   // push: pool B alloc size
+    if (log) fprintf(log, "[astar]   node pools widened 8x (64K->512K nodes) : %d/12 sites\n", n);
+    return n;
+}
+
 int ApplyModulePatches(FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);

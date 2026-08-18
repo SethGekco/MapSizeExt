@@ -94,6 +94,7 @@ static void ApplyInit()
         if (cfg.PatchBounds)  ApplyOccupancyBoundPatches(f); else fprintf(f, "[occ]     DISABLED via INI\n");
         if (cfg.PatchIterator) ApplyIteratorStridePatches(f); else fprintf(f, "[iter]    DISABLED via INI\n");
         if (cfg.PatchSubzone) ApplySubzoneScalePatches(f); else fprintf(f, "[subzone] DISABLED via INI\n");
+        ApplyAStarPoolPatches(f);
         if (cfg.PatchRadar)   ApplyRadarPatches(f);        else fprintf(f, "[radar]   DISABLED via INI\n");
         if (cfg.PatchModules) ApplyModulePatches(f);  else fprintf(f, "[dll]     DISABLED via INI\n");
         if (cfg.PatchModules) ApplyAntaresPatches(f); else fprintf(f, "[antares] DISABLED via INI\n");
@@ -120,6 +121,7 @@ static void ApplyInit()
         if (cfg.PatchBounds)  ApplyOccupancyBoundPatches(nullptr);
         if (cfg.PatchIterator) ApplyIteratorStridePatches(nullptr);
         if (cfg.PatchSubzone) ApplySubzoneScalePatches(nullptr);
+        ApplyAStarPoolPatches(nullptr);
         if (cfg.PatchRadar)   ApplyRadarPatches(nullptr);
         if (cfg.PatchModules) ApplyModulePatches(nullptr);
         if (cfg.PatchModules) ApplyAntaresPatches(nullptr);

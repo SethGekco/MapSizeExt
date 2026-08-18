@@ -48,6 +48,8 @@ int ApplyIteratorStridePatches(FILE* log);
 // Subzone hierarchy block scale 4->8 (Krisztiaan handoff): keeps subzone IDs in
 // range on big maps. Radar surface resize 512->1024: enables the minimap.
 int ApplySubzoneScalePatches(FILE* log);
+// A* node-pool 8x widening (heap-corruption fix); no-op at stride 512.
+int ApplyAStarPoolPatches(FILE* log);
 int ApplyRadarPatches(FILE* log);
 
 // Fixes the inverse index->(X,Y) conversions (and 0x1FF / sar 9) so
