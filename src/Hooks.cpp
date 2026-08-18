@@ -992,6 +992,23 @@ static bool TraceBudget()
     static int n = 0;
     return ++n <= 600;
 }
+// THE runtime click-order encoder -- TargetClass::From(AbstractClass*), cell
+// branch @0x6E6AC0: WhatAmI()==0xB -> read MapCoords -> lea x5, POP EDI,
+// lea x5, lea x5, x8 -> N = X + 1000*Y. The interleaved one-byte `pop edi`
+// @0x6E6ADD broke every consecutive-pattern scan across five hunts; found via
+// its return address (0x6E6AFC, non-cell branch) captured in the static ring
+// dump. Hook after the x125 chain: ecx = 125*Y (exact), edx = X; recompute
+// N = X + Y*CoordBase, store to [esi] (type 0xB already stored @0x6E6AC8),
+// resume at the return sequence.
+DEFINE_HOOK(6E6AE4, CellTarget_Encode0_CoordBase, 5)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const DWORD y = R->ECX() / 125;                       // lea chain: ecx = 125*Y
+    const DWORD N = R->EDX() + y * (DWORD)g_CoordBase;    // edx = X
+    *reinterpret_cast<DWORD*>(R->ESI()) = N;
+    if (TraceBudget()) DeployDiagLog("ENC0 (%u,%u) -> %u\n", R->EDX(), y, N);
+    return 0x6E6AE9;                                      // mov eax,esi; pop esi; ret 4
+}
 DEFINE_HOOK(6E6B51, CellTarget_Encode1_CoordBase, 6)
 {
     if (g_CoordBase <= 1000) return 0;
