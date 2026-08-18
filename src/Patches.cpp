@@ -2,6 +2,7 @@
 #include "MapSizeExt.h"
 #include "AresPhobosSites.h"
 #include <windows.h>
+#include <string.h>
 
 // ============================================================
 //  Phase 2 stride sites (map-stride `shl reg,0x9` multiplies).
@@ -836,6 +837,79 @@ static int ApplyPhobosCellIndexScan(int shift, DWORD total, FILE* log)
     return n;
 }
 
+// ============================================================
+//  Phobos WAYPOINT CoordBase patch (the stride-2048 spawn fix).
+//
+//  Phobos's waypoint rework REPLACES the vanilla [Waypoints] reader (its hook
+//  returns straight to 0x68BDB3), parses every entry itself and hardcodes
+//  base 1000:
+//     RVA 0x800F5  Y = N/1000   (0x10624DD3 reciprocal-multiply, 17 bytes)
+//     RVA 0x80109  imul eax,ebp,1000 ; ... ; sub esi,eax  -> X = N - Y*1000
+//  so the engine's Scenario.Waypoints stays empty/sentinel and our gamemd
+//  CoordBase hook @0x68BE0C is dead code in this flow. Proven 2026-08-17 on
+//  700x700: every spawn landed at the base-1000 decode of its base-2048 value
+//  (wp0 741739 -> (739,741) on-map; wp3/wp7 -> ry 1434/1433 > 1399 off-map),
+//  and [coordbase] logged zero decodes.
+//
+//  Fix: the CnCNet client writes spawnmap.ini BEFORE launching gamemd, so at
+//  init we read [MapSizeExt]CoordBase from it (absent/vanilla map -> 1000 ->
+//  no-op). For base = power of two > 1000, rewrite the decode in Phobos.dll:
+//     Y = N >> log2(base)   (mov eax,esi; shr eax,k; NOP-fill the magic)
+//     X = N - Y*base        (imul imm 1000 -> base; existing sub unchanged)
+//  Separately (any stride > 512, no CoordBase needed): the parser's inline
+//  cell-index validity check (shl ebx,9 @0x80114 + cmp 0x3FFFF @0x8011E +
+//  Items[+0x13C]) is in NEITHER kPhobosShl nor the scanner's matched set ->
+//  patch it here. All writes byte-verified (Phobos Development Build 48);
+//  a different build skips with a log line.
+static int ApplyPhobosWaypointCoordBase(int shift, DWORD total, FILE* log)
+{
+    HMODULE h = GetModuleHandleA("Phobos.dll");
+    if (!h) return 0;
+    const DWORD base = reinterpret_cast<DWORD>(h);
+    int n = 0;
+
+    // -- validity-check cell index (stride fix, independent of CoordBase) --
+    n += PatchShiftC1(base + 0x80114, (BYTE)shift);            // shl ebx,9 -> stride
+    n += PatchImm32(base + 0x8011E, 2, 0x3FFFF, total - 1);    // bound -> stride^2-1
+
+    // -- per-map decode base from spawnmap.ini --
+    char ini[MAX_PATH];
+    GetModuleFileNameA(nullptr, ini, MAX_PATH);
+    char* s = strrchr(ini, '\\'); if (s) *(s + 1) = '\0';
+    strcat_s(ini, "spawnmap.ini");
+    const int cb = (int)GetPrivateProfileIntA("MapSizeExt", "CoordBase", 1000, ini);
+    int k = -1;                                    // log2(cb) if power of two
+    for (int b = 10; b <= 20; ++b) if (cb == (1 << b)) { k = b; break; }
+    if (cb <= 1000 || k < 0)
+    {
+        if (log) fprintf(log, "[phobos-wp] spawnmap CoordBase=%d -> decode stays base-1000; validity %d/2\n", cb, n);
+        return n;
+    }
+
+    // Y = N/1000 (magic) -> Y = N >> k
+    static const BYTE expY[17] = { 0xB8,0xD3,0x4D,0x62,0x10,0xF7,0xEE,0xC1,0xFA,0x06,
+                                   0x8B,0xC2,0xC1,0xE8,0x1F,0x03,0xC2 };
+    BYTE repY[17] = { 0x8B,0xC6,0xC1,0xE8,(BYTE)k,0x90,0x90,0x90,0x90,0x90,
+                      0x90,0x90,0x90,0x90,0x90,0x90,0x90 };
+    void* pY = reinterpret_cast<void*>(base + 0x800F5);
+    if (memcmp(pY, expY, 17) == 0)
+    {
+        DWORD old = 0;
+        if (VirtualProtect(pY, 17, PAGE_EXECUTE_READWRITE, &old))
+        {
+            memcpy(pY, repY, 17);
+            VirtualProtect(pY, 17, old, &old);
+            ++n;
+        }
+    }
+    // X = N - Y*1000 -> imul imm 1000 -> cb (sub stays)
+    n += PatchImm32(base + 0x80109, 2, 0x3E8, (DWORD)cb);
+
+    if (log) fprintf(log, "[phobos-wp] spawnmap CoordBase=%d -> Phobos waypoint decode Y=N>>%d, X=N-Y*%d (+validity) : %d/4 sites\n",
+                     cb, k, cb, n);
+    return n;
+}
+
 int ApplyModulePatches(FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);
@@ -889,6 +963,7 @@ int ApplyModulePatches(FILE* log)
         grand += ns + nc + na + nr;
     }
     grand += ApplyPhobosCellIndexScan(shift, total, log);   // ore spawner + 12 other newer GetCellIndex sites
+    grand += ApplyPhobosWaypointCoordBase(shift, total, log);  // the 2048 spawn fix (per-map base from spawnmap.ini)
     return grand;
 }
 
