@@ -651,7 +651,7 @@ DEFINE_HOOK(70D990, Object_PlotOnRadar_NullGuard, 6)
 static void DeployDiagLog(const char* fmt, ...)
 {
     static int lines = 0;
-    if (g_MapStride <= 512 || lines >= 500) return;
+    if (g_MapStride <= 512 || lines >= 50000) return;   // was 500: logs stopped mid-game (user-reported)
     char path[MAX_PATH];
     GetModuleFileNameA(nullptr, path, MAX_PATH);
     char* slash = strrchr(path, '\\');
@@ -1142,17 +1142,34 @@ DEFINE_HOOK(55BAA0, EventQueue_Add_Trace, 5)
     if (g_MapStride > 512)
     {
         static int n = 0;
-        if (++n <= 100)
+        const DWORD esp = R->ESP();
+        const BYTE* ev = *reinterpret_cast<const BYTE**>(esp + 4);
+        if (ev && n < 60)
         {
-            const DWORD esp = R->ESP();
-            const DWORD caller = *reinterpret_cast<DWORD*>(esp);
-            const BYTE* ev = *reinterpret_cast<const BYTE**>(esp + 4);
-            if (ev)
+            // Filter: only events carrying a plausible packed cell number
+            // (base-1000 or base-2048 of an in-map cell: ~200,001..2,867,199)
+            // -- skips the per-frame sync spam that ate the earlier capture.
+            bool hasCell = false; int cellOff = -1;
+            for (int off = 0; off + 4 <= 0x6F; ++off)
             {
-                char hexs[3 * 0x20 + 4]; int p = 0;
-                for (int i = 0; i < 0x20; ++i)
+                DWORD v = *reinterpret_cast<const DWORD*>(ev + off);
+                if (v >= 200001 && v <= 2867199 && ev[off + 4] == 0x0B)
+                { hasCell = true; cellOff = off; break; }
+            }
+            if (hasCell)
+            {
+                ++n;
+                char hexs[3 * 0x70 + 4]; int p = 0;
+                for (int i = 0; i < 0x6F; ++i)
                     p += sprintf_s(hexs + p, sizeof(hexs) - p, "%02X ", ev[i]);
-                DeployDiagLog("EVQ caller=%X  %s\n", caller, hexs);
+                char chain[160]; chain[0] = '\0'; int cp = 0, f = 0;
+                for (int off = 0; off <= 0x100 && f < 8; off += 4)
+                {
+                    DWORD v = *reinterpret_cast<DWORD*>(esp + off);
+                    if (v >= 0x401000 && v < 0x7E0000)
+                    { cp += sprintf_s(chain + cp, sizeof(chain) - cp, " %X", v); ++f; }
+                }
+                DeployDiagLog("EVQC N@+0x%X stk:%s\n  %s\n", cellOff, chain, hexs);
             }
         }
     }
