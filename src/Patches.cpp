@@ -1002,7 +1002,7 @@ static int ApplyPlanningBasePatches(FILE* log)
 //  wild, and a heap object gets corrupted (the FactoryClass vtable
 //  low-byte hits, the wild-EIP fatals). Fix: widen both pools 8x --
 //  allocations @0x42A7E0/0x42A814 and ALL 10 hardcoded offset sites.
-static int ApplyAStarPoolPatches(FILE* log)
+int ApplyAStarPoolPatches(FILE* log)
 {
     if (g_MapStride <= 512) { if (log) fprintf(log, "[astar]   pools stay vanilla  [no-op]\n"); return 0; }
     static const DWORD kPoolA[] = { 0x42A466, 0x42A479, 0x42A5C3, 0x42A80A, 0x42A840 };
