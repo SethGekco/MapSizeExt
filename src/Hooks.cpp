@@ -977,19 +977,23 @@ DEFINE_HOOK(6E6B89, CellTarget_Encode2_CoordBase, 6)
 // cartesian doubles in range) pass through untouched.
 static void ClampCellToMap(int& rx, int& ry)
 {
+    // The iso diamond is DENSE: valid cells exist at BOTH parities of rx+ry
+    // (half-offset rows; (2W-1)*H cells total). From the map codec: dy = rx+ry
+    // -W-1 in [0, 2H-1], dx = rx-ry+W-1 in [0, 2W-2], ANY integer pair in those
+    // ranges is a real cell. (An earlier revision wrongly required even parity
+    // and shifted half of all in-map clicks by one cell.)
     const int W = *reinterpret_cast<int*>(0x87F8DC);   // MapRect.W / .H
     const int H = *reinterpret_cast<int*>(0x87F8E0);
     if (W <= 0 || H <= 0) return;
-    const int X2 = rx - ry + W - 1;                    // 2*cartX for valid cells
-    const int Y2 = rx + ry - W - 1;                    // 2*cartY
-    if (X2 >= 0 && X2 <= 2 * (W - 1) && Y2 >= 0 && Y2 <= 2 * (H - 1) &&
-        !(X2 & 1) && !(Y2 & 1))
+    int dx = rx - ry + W - 1;
+    int dy = rx + ry - W - 1;
+    if (dx >= 0 && dx <= 2 * W - 2 && dy >= 0 && dy <= 2 * H - 1)
         return;                                        // already a valid cell
-    int X = X2 >> 1, Y = Y2 >> 1;
-    if (X < 0) X = 0; else if (X > W - 1) X = W - 1;
-    if (Y < 0) Y = 0; else if (Y > H - 1) Y = H - 1;
-    rx = X + Y + 1;
-    ry = Y - X + W;
+    if (dx < 0) dx = 0; else if (dx > 2 * W - 2) dx = 2 * W - 2;
+    if (dy < 0) dy = 0; else if (dy > 2 * H - 1) dy = 2 * H - 1;
+    if ((dx + dy) & 1) { if (dy > 0) --dy; else ++dy; }   // rx must be integral
+    rx = ((dx + dy) >> 1) + 1;
+    ry = ((dy - dx) >> 1) + W;
 }
 DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
 {
