@@ -982,13 +982,11 @@ static int ApplyPhobosWaypointCoordBase(int shift, DWORD total, FILE* log)
 //  Y*1000+X (proven: click (369,363) -> N=363369 -> decoded (873,177)).
 static int ApplyPlanningBasePatches(FILE* log)
 {
-    if (g_CoordBase <= 1000) return 0;
-    static const DWORD kSites[6] = { 0x63D7BD, 0x63FBED, 0x63FC49, 0x63FCA5, 0x63FD03, 0x63FD61 };
-    int n = 0;
-    for (int i = 0; i < 6; ++i)
-        n += PatchImm32(kSites[i], 1, 0x3E8, (DWORD)g_CoordBase);   // push imm32
-    if (log) fprintf(log, "[planning] order pack-base 1000 -> %d : %d/6 sites\n", g_CoordBase, n);
-    return n;
+    // REVERTED 2026-08-18: the six push-1000s applied (6/6) but clicks still
+    // produced base-1000 targets -> these arguments are NOT the pack base
+    // (likely durations/ranges); leave them vanilla to avoid side effects.
+    (void)log;
+    return 0;
 }
 
 int ApplyModulePatches(FILE* log)
