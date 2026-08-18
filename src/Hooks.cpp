@@ -97,6 +97,52 @@ static void DumpMapStateOnce()
     fprintf(f, "-- raw window 0xE0..0x158 --\n");
     for (DWORD off = 0xE0; off <= 0x158; off += 4)
         fprintf(f, "  [+0x%03X] = %11d  (0x%08X)\n", off, I(off), U(off));
+
+    // Diamond edge-band population audit (2026-08-18): user reports LEGAL cells
+    // ~5-10 deep from the map edge refuse orders with a normal cursor at stride
+    // 2048 -- consistent with NULL/garbage slots in a ring just inside the
+    // diamond (population under-fill). Sample rings at cartesian edge distance
+    // d and count null / identity-mismatched slots. All-zero = population OK
+    // (then the dead band is elsewhere); nonzero pins the hole's depth.
+    {
+        const int W = I(0xF4), H = I(0xF8);
+        DWORD items = *reinterpret_cast<DWORD*>(0x87F924);
+        if (items && W > 4 && H > 4)
+        {
+            static const int bands[] = { 0, 1, 2, 3, 5, 8, 12 };
+            fprintf(f, "\n-- edge-band population audit (d = cartesian ring distance) --\n");
+            for (int bi = 0; bi < 7; ++bi)
+            {
+                const int d = bands[bi];
+                if (2 * d >= W || 2 * d >= H) break;
+                int total = 0, nullc = 0, badid = 0;
+                for (int side = 0; side < 4; ++side)
+                {
+                    const int n = (side < 2 ? W - 2 * d : H - 2 * d);
+                    const int step = (n > 200 ? n / 200 : 1);
+                    for (int i = 0; i < n; i += step)
+                    {
+                        int X, Y;
+                        if (side == 0)      { X = d + i;     Y = d; }
+                        else if (side == 1) { X = d + i;     Y = H - 1 - d; }
+                        else if (side == 2) { X = d;         Y = d + i; }
+                        else                { X = W - 1 - d; Y = d + i; }
+                        const int rx = X + Y + 1, ry = Y - X + W;
+                        const int idx = ry * g_MapStride + rx;
+                        ++total;
+                        if (idx < 0 || idx >= g_MapTotal) { ++badid; continue; }
+                        const DWORD c = *reinterpret_cast<DWORD*>(items + idx * 4);
+                        if (!c) { ++nullc; continue; }
+                        if (c < 0x400000 || c >= 0x60000000) { ++badid; continue; }
+                        if (*reinterpret_cast<short*>(c + 0x24) != rx ||
+                            *reinterpret_cast<short*>(c + 0x26) != ry) ++badid;
+                    }
+                }
+                fprintf(f, "  band d=%2d: sampled=%4d  null=%4d  bad-identity=%4d\n",
+                        d, total, nullc, badid);
+            }
+        }
+    }
     fclose(f);
 }
 
@@ -923,20 +969,46 @@ DEFINE_HOOK(6E6B89, CellTarget_Encode2_CoordBase, 6)
     R->EDI(R->EAX() * (DWORD)(g_CoordBase >> 3));   // eax=Y -> edi=Y*(base/8)
     return 0x6E6B92;                                // X conv; lea eax,[eax+edi*8]
 }
+// Vanilla parity (user-verified behavior): an off-map order travels to the
+// NEAREST map cell -- vanilla's click path clamps. Our decode is faithful, so
+// off-diamond coords previously fell through to the dummy (-> no-op). Clamp
+// them into the map diamond here instead: convert iso (rx,ry) -> cartesian,
+// clamp to [0,W-1]x[0,H-1], convert back. Exact in-diamond coords (even
+// cartesian doubles in range) pass through untouched.
+static void ClampCellToMap(int& rx, int& ry)
+{
+    const int W = *reinterpret_cast<int*>(0x87F8DC);   // MapRect.W / .H
+    const int H = *reinterpret_cast<int*>(0x87F8E0);
+    if (W <= 0 || H <= 0) return;
+    const int X2 = rx - ry + W - 1;                    // 2*cartX for valid cells
+    const int Y2 = rx + ry - W - 1;                    // 2*cartY
+    if (X2 >= 0 && X2 <= 2 * (W - 1) && Y2 >= 0 && Y2 <= 2 * (H - 1) &&
+        !(X2 & 1) && !(Y2 & 1))
+        return;                                        // already a valid cell
+    int X = X2 >> 1, Y = Y2 >> 1;
+    if (X < 0) X = 0; else if (X > W - 1) X = W - 1;
+    if (Y < 0) Y = 0; else if (Y > H - 1) Y = H - 1;
+    rx = X + Y + 1;
+    ry = Y - X + W;
+}
 DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
 {
     if (g_CoordBase <= 1000) return 0;
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
-    *reinterpret_cast<short*>(R->ESP() + 4) = (short)(N % b);   // X (orig @0x6E6EE5)
-    R->EDX(N / b);                                              // Y; tail: eax=edx,shr 31(=0),add
+    int rx = (int)(N % b), ry = (int)(N / b);
+    ClampCellToMap(rx, ry);
+    *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E6EE5)
+    R->EDX((DWORD)ry);                                          // Y; tail: eax=edx,shr 31(=0),add
     return 0x6E6EEF;
 }
 DEFINE_HOOK(6E7C2C, CellTarget_Decode2_CoordBase, 5)
 {
     if (g_CoordBase <= 1000) return 0;
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
-    *reinterpret_cast<short*>(R->ESP() + 4) = (short)(N % b);   // X (orig @0x6E7C39)
-    R->EDX(N / b);
+    int rx = (int)(N % b), ry = (int)(N / b);
+    ClampCellToMap(rx, ry);
+    *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E7C39)
+    R->EDX((DWORD)ry);
     return 0x6E7C43;
 }
 
