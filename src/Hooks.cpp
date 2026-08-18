@@ -883,6 +883,55 @@ DEFINE_HOOK(5657CF, CellLookup_Fail_GetCellAt, 6)
     return 0;
 }
 
+// ============================================================
+//  DUMMY-DESTINATION WRITE TRAP (the human-order decode bug, stride 2048).
+//
+//  The 3-site Phobos coord-cell fix did NOT cure it: clicked units still get
+//  Destination = the OOB dummy 0xABDC50, and neither the sentinel-fail traps
+//  nor the loose Phobos rescan see the failing decode. So trap the one step
+//  the bug cannot avoid: the store into FootClass+0x5A4. All 13 writer
+//  instructions (6-byte movs) are hooked; we log ONLY when the stored value is
+//  the dummy, with a raw stack scan for return-address candidates (gamemd
+//  .text 0x401000-0x7E0000 and DLL range 0x70000000+) -- the caller chain
+//  names the decode function without needing any frame layout.
+static void LogDummyDestWrite(DWORD site, DWORD value, DWORD obj, DWORD esp)
+{
+    if (value != 0xABDC50) return;
+    static int total = 0;
+    if (++total > 40) return;
+    char chain[256]; chain[0] = '\0'; int pos = 0, found = 0;
+    for (int off = 0; off <= 0x80 && found < 7; off += 4)
+    {
+        DWORD v = *reinterpret_cast<DWORD*>(esp + off);
+        if ((v >= 0x401000 && v < 0x7E0000) || (v >= 0x70000000 && v < 0x80000000))
+        {
+            pos += sprintf_s(chain + pos, sizeof(chain) - pos, " %X", v);
+            ++found;
+        }
+    }
+    DeployDiagLog("DUMMYDEST @%X foot=%X stack:%s\n", site, obj, chain);
+}
+#define DEST_WRITE_HOOK(addr, objreg, valreg)                                  \
+DEFINE_HOOK(addr, DestWrite_##addr, 6)                                         \
+{                                                                              \
+    if (g_MapStride > 512)                                                     \
+        LogDummyDestWrite(0x##addr, R->valreg(), R->objreg(), R->ESP());       \
+    return 0;                                                                  \
+}
+DEST_WRITE_HOOK(4D32C7, ESI, EBX)
+DEST_WRITE_HOOK(4D5A01, EBX, EDI)
+DEST_WRITE_HOOK(4D9510, EBP, ESI)
+DEST_WRITE_HOOK(4D96BC, EBP, ESI)
+DEST_WRITE_HOOK(4D9AC3, ESI, EBP)
+DEST_WRITE_HOOK(4DF0D8, ECX, EAX)
+DEST_WRITE_HOOK(54B44B, ECX, EAX)
+DEST_WRITE_HOOK(665DD3, ESI, EBX)
+DEST_WRITE_HOOK(66ECC1, ESI, EAX)
+DEST_WRITE_HOOK(67890E, ESI, EAX)
+DEST_WRITE_HOOK(710F93, ESI, EBP)
+DEST_WRITE_HOOK(7138D7, EBP, EAX)
+DEST_WRITE_HOOK(73A4E9, EBP, EAX)
+
 DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 {
     if (g_MapStride > 512)
