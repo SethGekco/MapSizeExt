@@ -969,6 +969,28 @@ static int ApplyPhobosWaypointCoordBase(int shift, DWORD total, FILE* log)
     return n;
 }
 
+// ============================================================
+//  Planning-mode pack-base arguments (the final base-1000 encoder, 2026-08-18).
+//
+//  The waypoint/planning module (0x633xxx-0x63Fxxx; per-frame re-resolvers
+//  0x633BF6 family caught by the DEC1 stack-scan) creates its orders through a
+//  helper that receives the CELL-PACK BASE AS AN ARGUMENT: six call setups
+//  `push 0x3E8` (0x63D7BD, 0x63FBED, 0x63FC49, 0x63FCA5, 0x63FD03, 0x63FD61).
+//  That is why every instruction-pattern scan for x1000 math failed -- the
+//  multiply lives behind a parameter. With all decoders CoordBase'd, these
+//  six immediates were the last base-1000 legs: planning clicks packed
+//  Y*1000+X (proven: click (369,363) -> N=363369 -> decoded (873,177)).
+static int ApplyPlanningBasePatches(FILE* log)
+{
+    if (g_CoordBase <= 1000) return 0;
+    static const DWORD kSites[6] = { 0x63D7BD, 0x63FBED, 0x63FC49, 0x63FCA5, 0x63FD03, 0x63FD61 };
+    int n = 0;
+    for (int i = 0; i < 6; ++i)
+        n += PatchImm32(kSites[i], 1, 0x3E8, (DWORD)g_CoordBase);   // push imm32
+    if (log) fprintf(log, "[planning] order pack-base 1000 -> %d : %d/6 sites\n", g_CoordBase, n);
+    return n;
+}
+
 int ApplyModulePatches(FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);
@@ -1023,6 +1045,7 @@ int ApplyModulePatches(FILE* log)
     }
     grand += ApplyPhobosCellIndexScan(shift, total, log);   // ore spawner + 12 other newer GetCellIndex sites
     grand += ApplyPhobosWaypointCoordBase(shift, total, log);  // the 2048 spawn fix (per-map base from spawnmap.ini)
+    grand += ApplyPlanningBasePatches(log);                     // planning-order pack-base args (g_CoordBase set above)
     return grand;
 }
 
