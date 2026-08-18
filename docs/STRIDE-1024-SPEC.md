@@ -227,6 +227,23 @@ enlarged (the game allocator won't return large contiguous blocks); clamp the
 counters instead (≤0xFFFE / ≤0x1FFFE) so overflow degrades a search rather than
 corrupting memory. **Reference**: `src/Hooks.cpp`, `AStar_PoolACap/PoolBCap`.
 
+## 14. How the reference implementation deploys (and why native adoption is better)
+
+MapSizeExt applies everything above as **in-process, in-memory byte patches at
+every game launch** — the files on disk (gamemd, Phobos.dll, Ares/Antares.dll)
+are never modified. The whole install is one DLL + one INI + a Syringe `-i=`
+entry. Every write is byte-verified first: if the expected bytes are not present
+(e.g. a different Phobos build), the site is *skipped*, never corrupted.
+
+The safety of skipping is also its hazard: a skipped site silently regresses
+that one feature to stride-512 behavior. We lived this — a curated Phobos site
+list went stale against a newer Phobos build and its ore-spawner placed ore at
+`(X, Y/2)` until a runtime pattern-scanner replaced the hardcoded list
+(`ApplyPhobosCellIndexScan`, `src/Patches.cpp`). This whole fragility class —
+per-build site lists, runtime scanners, cross-DLL patching — disappears entirely
+when the changes live in the engine-extension source itself, which is the case
+for adopting this spec natively.
+
 ---
 
 ## Validation checklist (each item corresponds to a real regression we hit)
