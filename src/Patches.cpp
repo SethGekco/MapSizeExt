@@ -956,7 +956,15 @@ static int ApplyPhobosWaypointCoordBase(int shift, DWORD total, FILE* log)
     // X = N - Y*1000 -> imul imm 1000 -> cb (sub stays)
     n += PatchImm32(base + 0x80109, 2, 0x3E8, (DWORD)cb);
 
-    if (log) fprintf(log, "[phobos-wp] spawnmap CoordBase=%d -> Phobos waypoint decode Y=N>>%d, X=N-Y*%d (+validity+coordcell) : %d/10 sites\n",
+    // Phobos's waypoint WRITER @0x8029A: imul ecx,[esi+0x16],1000; add [esi+0x14]
+    // -> WriteInt("Waypoints", ...). NOT save-only: planning-mode clicks create
+    // waypoints through it, and the written value resurfaces as the {type 0xB, N}
+    // order target (proven: user's click at (360,365) -> N=365360 re-decoded
+    // every frame by the event codec). Every reader is CoordBase now; re-base
+    // the writer too or planning waypoints decode as garbage.
+    n += PatchImm32(base + 0x8029A, 2, 0x3E8, (DWORD)cb);
+
+    if (log) fprintf(log, "[phobos-wp] spawnmap CoordBase=%d -> Phobos waypoint decode Y=N>>%d, X=N-Y*%d (+validity+coordcell+wpwrite) : %d/11 sites\n",
                      cb, k, cb, n);
     return n;
 }
