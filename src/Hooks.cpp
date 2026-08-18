@@ -884,6 +884,63 @@ DEFINE_HOOK(5657CF, CellLookup_Fail_GetCellAt, 6)
 }
 
 // ============================================================
+//  CELL-TARGET CODEC CoordBase FIX (root cause of the 2048 order bug).
+//
+//  The DUMMYDEST trap named the chain: EventClass::Execute (0x4C7482) ->
+//  cell-target DECODE 0x6E6ED6 -> InfantryClass::SetDestination -> dummy.
+//  Human orders travel through the event queue as TargetClass {N @+0, type
+//  @+4}; for cells type=0xB and N = Y*1000 + X -- RA2's universal base-1000
+//  external cell number. At stride 2048 any clicked cell with X>=1000 encodes
+//  ambiguously and the decode yields off-diamond coords -> GetCellAt returns
+//  the dummy -> the unit chases the dummy's drifting scratch coords (every
+//  observed symptom). AI orders bypass the event queue -> never affected.
+//
+//  The complete codec (all in the 0x6E6xxx-0x6E7Cxx cluster):
+//    ENCODE1 0x6E6B20 (from CellStruct): tag @0x6E6B46; Y*125 via lea-chain
+//      @0x6E6B51-57; N = X + 8*(125Y) @0x6E6B5A; store @0x6E6B5D.
+//    ENCODE2 0x6E6B70 (from CoordStruct/leptons): tag @0x6E6B75; Y*125
+//      @0x6E6B89-8F into EDI; N = X + EDI*8 @0x6E6BA0.
+//    DECODE1 0x6E6ED0 (type==0xB): X=N%1000 (idiv @0x6E6EDE), Y=N/1000
+//      (magic), CellStruct -> GetCellAt @0x6E6F05.
+//    DECODE2 0x6E7C20: identical twin (MegaMission destination field).
+//  Both encoders share the "*8 tail", so substituting the 125 with
+//  (CoordBase>>3) re-bases them exactly (1000>>3==125; CoordBase is pow2).
+//  Decoders replace the div pair with N%base / N/base. All four hooks are
+//  strict no-ops (return 0 -> original base-1000 code) unless the map carries
+//  CoordBase>1000 (published at init from spawnmap.ini), so vanilla maps stay
+//  byte-identical in behavior. Deferred same-class siblings (not in the order
+//  path): 0x4AD232/0x4ADC17 (Display text/waypoint parse), 0x71CAEF (forest
+//  fire jump) -- revisit if their features misbehave on CoordBase maps.
+DEFINE_HOOK(6E6B51, CellTarget_Encode1_CoordBase, 6)
+{
+    if (g_CoordBase <= 1000) return 0;
+    R->ECX(R->ECX() * (DWORD)(g_CoordBase >> 3));   // ecx=Y -> Y*(base/8)
+    return 0x6E6B5A;                                // lea ecx,[edx+ecx*8]; store
+}
+DEFINE_HOOK(6E6B89, CellTarget_Encode2_CoordBase, 6)
+{
+    if (g_CoordBase <= 1000) return 0;
+    R->EDI(R->EAX() * (DWORD)(g_CoordBase >> 3));   // eax=Y -> edi=Y*(base/8)
+    return 0x6E6B92;                                // X conv; lea eax,[eax+edi*8]
+}
+DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
+    *reinterpret_cast<short*>(R->ESP() + 4) = (short)(N % b);   // X (orig @0x6E6EE5)
+    R->EDX(N / b);                                              // Y; tail: eax=edx,shr 31(=0),add
+    return 0x6E6EEF;
+}
+DEFINE_HOOK(6E7C2C, CellTarget_Decode2_CoordBase, 5)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
+    *reinterpret_cast<short*>(R->ESP() + 4) = (short)(N % b);   // X (orig @0x6E7C39)
+    R->EDX(N / b);
+    return 0x6E7C43;
+}
+
+// ============================================================
 //  DUMMY-DESTINATION WRITE TRAP (the human-order decode bug, stride 2048).
 //
 //  The 3-site Phobos coord-cell fix did NOT cure it: clicked units still get

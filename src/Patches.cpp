@@ -903,6 +903,11 @@ static int ApplyPhobosWaypointCoordBase(int shift, DWORD total, FILE* log)
         if (log) fprintf(log, "[phobos-wp] spawnmap CoordBase=%d -> decode stays base-1000; validity+coordcell %d/8\n", cb, n);
         return n;
     }
+    // Publish for the gamemd cell-target codec hooks (Hooks.cpp
+    // CellTarget_Encode*/Decode*_CoordBase) and any other CoordBase consumer:
+    // the client writes spawnmap.ini before launch, so this is per-session
+    // correct and set before any scenario parsing runs.
+    g_CoordBase = cb;
 
     // Y = N/1000 (magic) -> Y = N >> k
     static const BYTE expY[17] = { 0xB8,0xD3,0x4D,0x62,0x10,0xF7,0xEE,0xC1,0xFA,0x06,
