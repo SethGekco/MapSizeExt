@@ -872,6 +872,24 @@ static int ApplyPhobosWaypointCoordBase(int shift, DWORD total, FILE* log)
     n += PatchShiftC1(base + 0x80114, (BYTE)shift);            // shl ebx,9 -> stride
     n += PatchImm32(base + 0x8011E, 2, 0x3FFFF, total - 1);    // bound -> stride^2-1
 
+    // -- coord->cell inline GetCellIndex sites the scanner's strict window
+    //    misses (lepton sar-8 conversion sits between the shl and the bound;
+    //    found by a loose 2-part rescan, verified genuine Items[+0x13C] derefs).
+    //    On a far-map coordinate the stale 0x3FFFF bound FAILS -> Phobos gets a
+    //    NULL cell -> silent misbehavior (suspected click/action decode path of
+    //    the 2048 "orders go to the dummy cell" bug). shl 9 -> stride, bound ->
+    //    stride^2-1, byte-verified (Phobos Development Build 48).
+    static const DWORD kCoordCell[][2] = {   // {shl RVA, cmp RVA}
+        { 0x271D5, 0x271EB },
+        { 0x6EAA3, 0x6EAB8 },
+        { 0x9F307, 0x9F31D },
+    };
+    for (int i = 0; i < 3; ++i)
+    {
+        n += PatchShiftC1(base + kCoordCell[i][0], (BYTE)shift);
+        n += PatchImm32(base + kCoordCell[i][1], 2, 0x3FFFF, total - 1);
+    }
+
     // -- per-map decode base from spawnmap.ini --
     char ini[MAX_PATH];
     GetModuleFileNameA(nullptr, ini, MAX_PATH);
@@ -882,7 +900,7 @@ static int ApplyPhobosWaypointCoordBase(int shift, DWORD total, FILE* log)
     for (int b = 10; b <= 20; ++b) if (cb == (1 << b)) { k = b; break; }
     if (cb <= 1000 || k < 0)
     {
-        if (log) fprintf(log, "[phobos-wp] spawnmap CoordBase=%d -> decode stays base-1000; validity %d/2\n", cb, n);
+        if (log) fprintf(log, "[phobos-wp] spawnmap CoordBase=%d -> decode stays base-1000; validity+coordcell %d/8\n", cb, n);
         return n;
     }
 
@@ -905,7 +923,7 @@ static int ApplyPhobosWaypointCoordBase(int shift, DWORD total, FILE* log)
     // X = N - Y*1000 -> imul imm 1000 -> cb (sub stays)
     n += PatchImm32(base + 0x80109, 2, 0x3E8, (DWORD)cb);
 
-    if (log) fprintf(log, "[phobos-wp] spawnmap CoordBase=%d -> Phobos waypoint decode Y=N>>%d, X=N-Y*%d (+validity) : %d/4 sites\n",
+    if (log) fprintf(log, "[phobos-wp] spawnmap CoordBase=%d -> Phobos waypoint decode Y=N>>%d, X=N-Y*%d (+validity+coordcell) : %d/10 sites\n",
                      cb, k, cb, n);
     return n;
 }
