@@ -348,16 +348,21 @@ DEFINE_HOOK(68BE0C, Waypoint_CoordBaseDecode, 5)
     dst[0] = static_cast<short>(N % ub);   // X = iso rx
     dst[1] = static_cast<short>(N / ub);   // Y = iso ry
 
-    static bool logged = false;
-    if (!logged && base != 1000)
+    // Log the first few decodes UNCONDITIONALLY (even base==1000): this is the
+    // direct proof of whether the reader ever sees a map's real waypoint values
+    // (e.g. N=741739 for the 700x700 map). The 2026-08-16 run showed CoordBase
+    // stuck at 1000 + zero engine waypoints at the (once-only) probe moment; the
+    // 50x950 run then PLAYED, proving the real read happens later than the probe.
+    static int decodes = 0;
+    if (++decodes <= 10)
     {
-        logged = true;
         char p[MAX_PATH];
         GetModuleFileNameA(nullptr, p, MAX_PATH);
         char* s = strrchr(p, '\\'); if (s) *(s + 1) = '\0';
         strcat_s(p, "MapSizeExt.log");
         FILE* f = nullptr; fopen_s(&f, p, "a");
-        if (f) { fprintf(f, "[coordbase] map CoordBase=%d (decoding waypoints Y*base+X)\n", base); fclose(f); }
+        if (f) { fprintf(f, "[coordbase #%d] N=%u base=%d -> X=%d Y=%d\n",
+                         decodes, N, base, (int)dst[0], (int)dst[1]); fclose(f); }
     }
     return 0x68BE35;
 }
@@ -382,10 +387,9 @@ DEFINE_HOOK(687410, Spawn_WaypointDiag, 6)
 {
     if (g_MapStride > 512)
     {
-        static bool logged = false;
-        if (!logged)
+        static int calls = 0;
+        if (++calls <= 24)          // log every call (capped), not once -- capture sequence
         {
-            logged = true;
             char* scen = *reinterpret_cast<char**>(0xA8B230);
             char p[MAX_PATH];
             GetModuleFileNameA(nullptr, p, MAX_PATH);
@@ -394,8 +398,9 @@ DEFINE_HOOK(687410, Spawn_WaypointDiag, 6)
             FILE* f = nullptr; fopen_s(&f, p, "a");
             if (f)
             {
-                fprintf(f, "[spawndiag] Scenario=%p CoordBase=%d copyFlag(0x34BD)=%d\n",
-                        (void*)scen, g_CoordBase, scen ? (int)(unsigned char)scen[0x34BD] : -1);
+                fprintf(f, "[spawndiag #%d] Scenario=%p CoordBase=%d copyFlag(0x34BD)=%d ini(ebx)=%p\n",
+                        calls, (void*)scen, g_CoordBase,
+                        scen ? (int)(unsigned char)scen[0x34BD] : -1, (void*)R->EBX());
                 if (scen)
                 {
                     unsigned* wp  = reinterpret_cast<unsigned*>(scen + 0x632);
@@ -425,10 +430,9 @@ DEFINE_HOOK(68839A, Spawn_AssignerDiag, 6)
 {
     if (g_MapStride > 512)
     {
-        static bool logged = false;
-        if (!logged)
+        static int calls = 0;
+        if (++calls <= 8)           // assigner may loop forever on hang -> cap hard
         {
-            logged = true;
             char* scen = *reinterpret_cast<char**>(0xA8B230);
             unsigned short sentinel = *reinterpret_cast<unsigned short*>(0xB05458);
             char p[MAX_PATH];
@@ -438,8 +442,8 @@ DEFINE_HOOK(68839A, Spawn_AssignerDiag, 6)
             FILE* f = nullptr; fopen_s(&f, p, "a");
             if (f)
             {
-                fprintf(f, "[assigner] Scenario=%p sentinelX=%04X -- Waypoints the assigner scans:\n",
-                        (void*)scen, sentinel);
+                fprintf(f, "[assigner #%d] Scenario=%p sentinelX=%04X -- Waypoints the assigner scans:\n",
+                        calls, (void*)scen, sentinel);
                 if (scen)
                 {
                     unsigned* wp = reinterpret_cast<unsigned*>(scen + 0x632);
