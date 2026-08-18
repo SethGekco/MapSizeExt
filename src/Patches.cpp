@@ -587,10 +587,38 @@ static const ByteEdit kSubzoneScale2048[] = {
 int ApplySubzoneScalePatches(FILE* log)
 {
     if (g_MapStride == 512) { if (log) fprintf(log, "[subzone] scale stays 4-cell  [no-op]\n"); return 0; }
+
+    // Pick the scale by MAP SIZE, not stride (2026-08-18). The 4->8 table is
+    // Krisztiaan's PROVEN set (corners fully reachable at 1024); the 4->16
+    // doubling is derived and SUSPECT: at scale 16 the outermost partial block
+    // is ~16 cells deep and user-observed edge cells (and the margin-12 spawn
+    // positions!) refuse all pathing at 2048 -- consistent with broken zone
+    // assignment in fringe blocks. 4->16 is only NEEDED when 8-cell-block
+    // subzone ids would overflow the signed-16-bit cap (~1000x1000+), so use
+    // the proven table whenever it fits. Map size read from spawnmap.ini
+    // (written by the client before launch, same mechanism as CoordBase).
+    bool use16 = false;
     if (g_MapStride >= 2048)
     {
+        char ini[MAX_PATH];
+        GetModuleFileNameA(nullptr, ini, MAX_PATH);
+        char* s = strrchr(ini, '\\'); if (s) *(s + 1) = '\0';
+        strcat_s(ini, "spawnmap.ini");
+        char buf[64] = { 0 };
+        GetPrivateProfileStringA("Map", "Size", "", buf, sizeof(buf), ini);
+        int mx = 0, my = 0, mw = 0, mh = 0;
+        if (sscanf_s(buf, "%d,%d,%d,%d", &mx, &my, &mw, &mh) == 4 && mw > 0 && mh > 0)
+        {
+            const int est = ((2 * mw - 1) * mh) / 64;   // ~subzone ids at 8-cell blocks
+            use16 = est > 28000;                        // headroom under 0x7FFF
+            if (log) fprintf(log, "[subzone] map %dx%d -> ~%d ids at scale 8\n", mw, mh, est);
+        }
+        else use16 = true;                              // size unknown -> overflow-safe
+    }
+    if (use16)
+    {
         int n = ApplyByteEdits(kSubzoneScale2048, sizeof(kSubzoneScale2048)/sizeof(ByteEdit), log, "subzone");
-        if (log) fprintf(log, "[subzone] hierarchy block scale 4->16 (stride 2048) : %d/17\n", n);
+        if (log) fprintf(log, "[subzone] hierarchy block scale 4->16 (big map) : %d/17\n", n);
         return n;
     }
     int n = ApplyByteEdits(kSubzoneScale, sizeof(kSubzoneScale)/sizeof(ByteEdit), log, "subzone");
