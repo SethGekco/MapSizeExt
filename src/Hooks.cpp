@@ -1020,7 +1020,18 @@ DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
     int rx = (int)(N % b), ry = (int)(N / b);
     ClampCellToMap(rx, ry);
-    if (TraceBudget()) DeployDiagLog("DEC1 %u -> (%d,%d)\n", N, rx, ry);
+    if (TraceBudget())
+    {
+        // caller stack-scan: who resolves this record (leads to who STORED it)
+        char chain[128]; chain[0]='\0'; int p=0, f=0;
+        for (int off = 0; off <= 0x60 && f < 5; off += 4)
+        {
+            DWORD v = *reinterpret_cast<DWORD*>(R->ESP() + off);
+            if ((v >= 0x401000 && v < 0x7E0000) || (v >= 0x70000000 && v < 0x80000000))
+            { p += sprintf_s(chain+p, sizeof(chain)-p, " %X", v); ++f; }
+        }
+        DeployDiagLog("DEC1 %u -> (%d,%d) stk:%s\n", N, rx, ry, chain);
+    }
     *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E6EE5)
     R->EDX((DWORD)ry);                                          // Y; tail: eax=edx,shr 31(=0),add
     return 0x6E6EEF;
@@ -1031,7 +1042,18 @@ DEFINE_HOOK(6E7C2C, CellTarget_Decode2_CoordBase, 5)
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
     int rx = (int)(N % b), ry = (int)(N / b);
     ClampCellToMap(rx, ry);
-    if (TraceBudget()) DeployDiagLog("DEC2 %u -> (%d,%d)\n", N, rx, ry);
+    if (TraceBudget())
+    {
+        // caller stack-scan: who resolves this record (leads to who STORED it)
+        char chain[128]; chain[0]='\0'; int p=0, f=0;
+        for (int off = 0; off <= 0x60 && f < 5; off += 4)
+        {
+            DWORD v = *reinterpret_cast<DWORD*>(R->ESP() + off);
+            if ((v >= 0x401000 && v < 0x7E0000) || (v >= 0x70000000 && v < 0x80000000))
+            { p += sprintf_s(chain+p, sizeof(chain)-p, " %X", v); ++f; }
+        }
+        DeployDiagLog("DEC2 %u -> (%d,%d) stk:%s\n", N, rx, ry, chain);
+    }
     *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E7C39)
     R->EDX((DWORD)ry);
     return 0x6E7C43;
