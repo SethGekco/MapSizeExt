@@ -1061,6 +1061,20 @@ DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
             for (int i = -0x18; i < 0x20; ++i)
                 p += sprintf_s(hexs + p, sizeof(hexs) - p, "%02X ", rec[i]);
             DeployDiagLog("RECDUMP N=%u rec=%X [-18..+20]: %s\n", N, (DWORD)rec, hexs);
+            // First hit: dump the WHOLE static ring region 0xA83E00-0xA84600
+            // (header + pointer array + packed records) to map its layout and
+            // ownership globals -- the ring WRITER is the base-1000 encoder.
+            if (nseen == 1)
+            {
+                for (DWORD row = 0xA83E00; row < 0xA84600; row += 0x20)
+                {
+                    char rh[3 * 0x20 + 4]; int rp = 0;
+                    for (int i = 0; i < 0x20; ++i)
+                        rp += sprintf_s(rh + rp, sizeof(rh) - rp, "%02X ",
+                                        *reinterpret_cast<BYTE*>(row + i));
+                    DeployDiagLog("RING %06X: %s\n", row, rh);
+                }
+            }
         }
         DeployDiagLog("DEC1 %u -> (%d,%d)\n", N, rx, ry);
     }
