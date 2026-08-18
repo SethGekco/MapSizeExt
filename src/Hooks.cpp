@@ -1074,6 +1074,38 @@ DEFINE_HOOK(4ADC17, CellNum_Decode_WaypointList_CoordBase, 5)
 }
 
 // ============================================================
+//  EVENT-QUEUE ADD TRACE (find the foreign base-1000 order encoder).
+//
+//  2026-08-18 tracer session: ZERO ENC events but a DEC1 of N=365360 =
+//  (360,365) base-1000 (user's construction-yard area) -> some order creator
+//  encodes cell targets base-1000 WITHOUT going through the two known
+//  encoders (vtable-dispatched; no direct callers; all DLLs scanned clean).
+//  0x55BAA0 = the order-queue Add (this=OutList 0x87F778, arg1=EventClass*).
+//  Log every queued event raw (first 0x20 bytes) + creator return address;
+//  the base-1000 dword's position + caller identifies the encoder directly.
+DEFINE_HOOK(55BAA0, EventQueue_Add_Trace, 5)
+{
+    if (g_MapStride > 512)
+    {
+        static int n = 0;
+        if (++n <= 100)
+        {
+            const DWORD esp = R->ESP();
+            const DWORD caller = *reinterpret_cast<DWORD*>(esp);
+            const BYTE* ev = *reinterpret_cast<const BYTE**>(esp + 4);
+            if (ev)
+            {
+                char hexs[3 * 0x20 + 4]; int p = 0;
+                for (int i = 0; i < 0x20; ++i)
+                    p += sprintf_s(hexs + p, sizeof(hexs) - p, "%02X ", ev[i]);
+                DeployDiagLog("EVQ caller=%X  %s\n", caller, hexs);
+            }
+        }
+    }
+    return 0;
+}
+
+// ============================================================
 //  DUMMY-DESTINATION WRITE TRAP (the human-order decode bug, stride 2048).
 //
 //  The 3-site Phobos coord-cell fix did NOT cure it: clicked units still get
