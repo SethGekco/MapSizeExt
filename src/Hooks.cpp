@@ -1047,15 +1047,22 @@ DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
     ClampCellToMap(rx, ry);
     if (TraceBudget())
     {
-        // caller stack-scan: who resolves this record (leads to who STORED it)
-        char chain[128]; chain[0]='\0'; int p=0, f=0;
-        for (int off = 0; off <= 0x60 && f < 5; off += 4)
+        // ESI = &record (the {N,type} target). Dump its neighborhood once per
+        // unique N (cap): the surrounding bytes identify the OWNING STRUCT
+        // (event type/frame/unit) -> which constructor built it -> the encoder.
+        static unsigned seen[12]; static int nseen = 0;
+        bool fresh = true;
+        for (int i = 0; i < nseen; ++i) if (seen[i] == N) { fresh = false; break; }
+        if (fresh && nseen < 12)
         {
-            DWORD v = *reinterpret_cast<DWORD*>(R->ESP() + off);
-            if ((v >= 0x401000 && v < 0x7E0000) || (v >= 0x70000000 && v < 0x80000000))
-            { p += sprintf_s(chain+p, sizeof(chain)-p, " %X", v); ++f; }
+            seen[nseen++] = N;
+            const BYTE* rec = reinterpret_cast<const BYTE*>(R->ESI());
+            char hexs[3 * 0x38 + 4]; int p = 0;
+            for (int i = -0x18; i < 0x20; ++i)
+                p += sprintf_s(hexs + p, sizeof(hexs) - p, "%02X ", rec[i]);
+            DeployDiagLog("RECDUMP N=%u rec=%X [-18..+20]: %s\n", N, (DWORD)rec, hexs);
         }
-        DeployDiagLog("DEC1 %u -> (%d,%d) stk:%s\n", N, rx, ry, chain);
+        DeployDiagLog("DEC1 %u -> (%d,%d)\n", N, rx, ry);
     }
     *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E6EE5)
     R->EDX((DWORD)ry);                                          // Y; tail: eax=edx,shr 31(=0),add
