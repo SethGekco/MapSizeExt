@@ -834,6 +834,55 @@ static DWORD CellAt(int x, int y)
 // LandType (+0xEC): 0=Clear 1=Road 2=Water 3=Rock 4=Wall 5=Tiberium 6=Beach 7=Rough 8=Cliff. -1 = null cell.
 static int LandTypeAt(int x, int y) { DWORD c = CellAt(x, y); return c ? *reinterpret_cast<int*>(c + 0xEC) : -1; }
 
+// ============================================================
+//  SENTINEL-FAIL TRAP (the human-order fold, stride 2048).
+//
+//  2026-08-17 bracket data: a corner-ordered unit's stored Destination is the
+//  OOB DUMMY CELL 0xABDC50 -- the click->order decode fails a cell lookup, the
+//  unit's destination becomes the dummy, and the dummy's scratch MapCoords
+//  (rewritten by every failed lookup game-wide) make the unit wander (all the
+//  observed behaviors: all-over-the-place / off-map north / mid-map / folds).
+//  All three cell-lookup fail paths write the REQUESTED packed coords into the
+//  dummy (0xABDC74) before returning it: op[](Cell&) @0x565712, op[](lepton)
+//  @0x565789, GetCellAt @0x5657CF. In-diamond coords cannot fail these checks
+//  at stride 2048, so every hit carries ALREADY-corrupt coords -- log request
+//  + caller return address to identify the decoder. Per-caller cap, total cap.
+static void LogSentinelFail(const char* site, DWORD packed, DWORD caller)
+{
+    static int total = 0;
+    if (total > 400) return;
+    ++total;
+    static DWORD callers[64]; static int counts[64]; static int ncal = 0;
+    int i;
+    for (i = 0; i < ncal; ++i) if (callers[i] == caller) break;
+    if (i == ncal)
+    {
+        if (ncal >= 64) return;
+        callers[ncal] = caller; counts[ncal] = 0; ++ncal;
+    }
+    if (counts[i]++ >= 6) return;
+    DeployDiagLog("OOB %s req(%d,%d) caller=0x%X\n", site,
+                  (int)(short)(packed & 0xFFFF), (int)(short)(packed >> 16), caller);
+}
+DEFINE_HOOK(565712, CellLookup_Fail_OpCell, 6)
+{
+    if (g_MapStride > 512)
+        LogSentinelFail("op[]", R->EDX(), *reinterpret_cast<DWORD*>(R->ESP() + 4));
+    return 0;
+}
+DEFINE_HOOK(565789, CellLookup_Fail_OpLepton, 6)
+{
+    if (g_MapStride > 512)
+        LogSentinelFail("lep ", R->EDX(), *reinterpret_cast<DWORD*>(R->ESP() + 4));
+    return 0;
+}
+DEFINE_HOOK(5657CF, CellLookup_Fail_GetCellAt, 6)
+{
+    if (g_MapStride > 512)
+        LogSentinelFail("gca ", R->EDX(), *reinterpret_cast<DWORD*>(R->ESP()));
+    return 0;
+}
+
 DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 {
     if (g_MapStride > 512)
