@@ -848,17 +848,28 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
         // "Walk on water" => a unit standing on visual water shows LT != 2 (LandType
         // mis-assigned) OR LT==2 but pathing proceeds anyway (zone/pathfinder bug).
         // Stuck-on-ramp => same (sx,sy) repeats with a higher-Level neighbour.
-        int tx = *reinterpret_cast<short*>(esp + 0x8);
-        int ty = *reinterpret_cast<short*>(esp + 0xA);
-        DWORD c = CellAt(sx, sy);
-        int L   = c ? (int)*reinterpret_cast<signed char*>(c + 0x11B) : -99;
-        int LT  = c ? *reinterpret_cast<int*>(c + 0xEC) : -99;
-        // TARGET is the key datum for the "bottom-right orders go top-left" bug:
-        // if the pathfinder is ASKED with a folded target, the fold is upstream
-        // (click -> order -> event pipeline); if the target here is correct, the
-        // fold is inside pathfinding/zone lookup. Log start AND target.
-        DeployDiagLog("PATH 0x%X start(%d,%d) -> TGT(%d,%d) L=%d LT=%d\n",
-                      R->ECX(), sx, sy, tx, ty, L, LT);
+        // CORRECTED arg layout (verified in disasm 0x4D392A-0x4D39CC): arg1
+        // @[esp+4] is the packed TARGET CellStruct (converted *256+128 to
+        // leptons and range-checked); arg2 @[esp+8] is a pointer. So (sx,sy)
+        // here = the TARGET the pathfinder is asked to reach. The 2026-08-17
+        // corner-order data (this very line, mislabeled "start") showed the
+        // target arrives PRE-FOLDED: each axis truncated to 10 bits (rx/ry
+        // -1024 when >=1024) -- invisible at strides 512/1024, folds at 2048.
+        // Bracket probe: ALSO log the unit's stored Destination object
+        // (FootClass+0x5A4, set by SetDestination at order execution). If the
+        // stored destination is folded too -> fold is upstream (click/event
+        // pipeline); if it is correct while the arg is folded -> the fold is in
+        // the mission/locomotor target->cell conversion.
+        int dx = -1, dy = -1; DWORD dvt = 0;
+        DWORD dest = *reinterpret_cast<DWORD*>(R->ECX() + 0x5A4);
+        if (dest > 0x10000 && dest < 0x60000000)
+        {
+            dvt = *reinterpret_cast<DWORD*>(dest);
+            dx  = *reinterpret_cast<short*>(dest + 0x24);   // CellClass MapCoords
+            dy  = *reinterpret_cast<short*>(dest + 0x26);
+        }
+        DeployDiagLog("PATH 0x%X TGT(%d,%d) dest=%08X vt=%08X destcell(%d,%d)\n",
+                      R->ECX(), sx, sy, dest, dvt, dx, dy);
     }
     R->EAX(0x1F9C);          // replicate mov eax,0x1f9c
     return 0x4D3925;
