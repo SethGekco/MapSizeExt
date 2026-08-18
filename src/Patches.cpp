@@ -990,30 +990,24 @@ static int ApplyPlanningBasePatches(FILE* log)
 }
 
 // ============================================================
-//  A* pathfinder node-pool widening (the delayed heap-corruption crash).
+//  A* pathfinder node-pool overflow guard  (the delayed heap-corruption crash).
 //
-//  Root cause (memory: mapsizeext-astar-pool-overflow; crash snapshot
-//  2026-08-18 110213, C0000005 @0x42A525): the pathfinder's node allocator
-//  @0x42A460 uses two heap pools whose COUNTERS live AT the buffer end --
-//  pool A: 16-byte nodes, counter at base+0x100000 (65,536 cap);
-//  pool B: 12-byte entries, counter at base+0x180000 (131,072 cap) --
-//  with NO bounds check. Big-map searches overflow pool A; the node written
-//  at slot 65,536 lands exactly on the counter, the next allocation goes
-//  wild, and a heap object gets corrupted (the FactoryClass vtable
-//  low-byte hits, the wild-EIP fatals). Fix: widen both pools 8x --
-//  allocations @0x42A7E0/0x42A814 and ALL 10 hardcoded offset sites.
+//  Root cause (memory mapsizeext-astar-pool-overflow; snapshot 110213): the
+//  node allocator @0x42A460 keeps pool counters AT the buffer end (pool A 16B
+//  nodes, counter@base+0x100000, 65,536 cap; pool B 12B, counter@base+0x180000,
+//  131,072 cap) with NO bounds check; a big-map search that needs >65,536 nodes
+//  writes the slot-65,536 node ONTO the counter, and the next allocation goes
+//  wild -> heap corruption.
+//
+//  We do NOT widen the buffers: the game allocator (0x7C9442) would not return
+//  a contiguous 8 MB block, so a bigger counter offset faulted at launch. The
+//  fix is the counter-CAP hooks in Hooks.cpp (AStar_PoolACap/PoolBCap) which
+//  clamp the node index just below capacity -> a pathological search degrades
+//  (reuses the top slot) instead of corrupting the heap. Nothing to patch here.
 int ApplyAStarPoolPatches(FILE* log)
 {
-    if (g_MapStride <= 512) { if (log) fprintf(log, "[astar]   pools stay vanilla  [no-op]\n"); return 0; }
-    static const DWORD kPoolA[] = { 0x42A466, 0x42A479, 0x42A5C3, 0x42A80A, 0x42A840 };
-    static const DWORD kPoolB[] = { 0x42A482, 0x42A48C, 0x42A5B9, 0x42A828, 0x42A835 };
-    int n = 0;
-    for (int i = 0; i < 5; ++i) n += PatchImm32(kPoolA[i], 2, 0x100000, 0x800000);
-    for (int i = 0; i < 5; ++i) n += PatchImm32(kPoolB[i], 2, 0x180000, 0xC00000);
-    n += PatchImm32(0x42A7E0, 1, 0x100004, 0x800004);   // push: pool A alloc size
-    n += PatchImm32(0x42A814, 1, 0x180004, 0xC00004);   // push: pool B alloc size
-    if (log) fprintf(log, "[astar]   node pools widened 8x (64K->512K nodes) : %d/12 sites\n", n);
-    return n;
+    if (log) fprintf(log, "[astar]   overflow guard active via cap hooks (no widening)\n");
+    return 0;
 }
 
 int ApplyModulePatches(FILE* log)

@@ -930,6 +930,31 @@ DEFINE_HOOK(5657CF, CellLookup_Fail_GetCellAt, 6)
 }
 
 // ============================================================
+//  A* NODE-POOL OVERFLOW CAP (heap-corruption crash fix, stride>512).
+//
+//  Allocator @0x42A460: pool A count read `mov edx,[eax+0x100000]` @0x42A466
+//  (6B) -> node = base + edx*16, then inc+store. Pool B count `mov
+//  edx,[eax+0x180000]` @0x42A482 (6B) -> entry = base + edx*12. We replicate
+//  the load and CLAMP the count just below capacity so the node/counter writes
+//  never reach the buffer end (A cap 0xFFFE*16=0xFFFE0 < 0x100000; B cap
+//  0x1FFFE*12=0x17FFE8 < 0x180000). No allocation change -> launch-safe;
+//  overflow just reuses the top slot (path may fail) instead of corrupting heap.
+DEFINE_HOOK(42A466, AStar_PoolACap, 6)
+{
+    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x100000);
+    if (g_MapStride > 512 && cnt > 0xFFFE) cnt = 0xFFFE;
+    R->EDX(cnt);
+    return 0x42A46C;                      // resume after the replaced mov
+}
+DEFINE_HOOK(42A482, AStar_PoolBCap, 6)
+{
+    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x180000);
+    if (g_MapStride > 512 && cnt > 0x1FFFE) cnt = 0x1FFFE;
+    R->EDX(cnt);
+    return 0x42A488;                      // resume after the replaced mov
+}
+
+// ============================================================
 //  CELL-TARGET CODEC CoordBase FIX (root cause of the 2048 order bug).
 //
 //  The DUMMYDEST trap named the chain: EventClass::Execute (0x4C7482) ->
