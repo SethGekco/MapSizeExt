@@ -968,11 +968,21 @@ static void LogDummyDestWrite(DWORD site, DWORD value, DWORD obj, DWORD esp)
     }
     DeployDiagLog("DUMMYDEST @%X foot=%X stack:%s\n", site, obj, chain);
 }
+// With the cell-target codec fixed, the only remaining dummy destinations come
+// from clicks on the VOID outside the map diamond (verified: every 2026-08-18
+// DUMMYDEST target lies genuinely off-diamond). Vanilla ignores such clicks;
+// chasing the dummy makes the unit wander to its drifting scratch coords. So
+// at stride>512 the hooks now store NULL instead of the dummy (skip the
+// original mov, +6) -> a void click cleanly clears the order.
 #define DEST_WRITE_HOOK(addr, objreg, valreg)                                  \
 DEFINE_HOOK(addr, DestWrite_##addr, 6)                                         \
 {                                                                              \
-    if (g_MapStride > 512)                                                     \
+    if (g_MapStride > 512 && R->valreg() == 0xABDC50)                          \
+    {                                                                          \
         LogDummyDestWrite(0x##addr, R->valreg(), R->objreg(), R->ESP());       \
+        *reinterpret_cast<DWORD*>(R->objreg() + 0x5A4) = 0;                    \
+        return 0x##addr + 6;                                                   \
+    }                                                                          \
     return 0;                                                                  \
 }
 DEST_WRITE_HOOK(4D32C7, ESI, EBX)
