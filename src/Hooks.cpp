@@ -954,6 +954,41 @@ DEFINE_HOOK(42A482, AStar_PoolBCap, 6)
     return 0x42A488;                      // resume after the replaced mov
 }
 
+// ------------------------------------------------------------------
+//  THIRD (hierarchical) A* node pool cap. Crash 20260818-175901: the
+//  hierarchical search fn (~0x42C2B0) allocates 16-byte nodes from the
+//  [AStar+0x64] pool (ctor malloc 0x27100 = exactly 10,000 nodes) using a
+//  stack counter [esp+0x2C] (init 1 @0x42C482) and byte offset [esp+0x30]
+//  (recomputed = count*16 each outer iteration @0x42C521), incremented
+//  @0x42C712-0x42C71D with NO bound check -- only the paired heap pushes
+//  ([AStar+0x68], cap 0x2710) are guarded, and a rejected push does not
+//  stop the node write. The subzone movzx fix let big-map hierarchical
+//  searches run to completion (~11.8K nodes observed), overrunning the pool
+//  by ~30 KB into the radar blip-index hash table that the wine heap places
+//  12 bytes after it (fatal @0x6567B3 walking a trampled bucket vector).
+//  Fix = same shape as the other two pools: clamp the counter at the single
+//  increment site so overflow reuses the top slot (degraded search, no OOB).
+//  Stolen bytes = the two 4-byte movs; we also perform the skipped inc/add
+//  (with the cap) and resume at the store-back @0x42C71E. NO-OP at 512.
+DEFINE_HOOK(42C712, AStar_HierNodePoolCap, 8)
+{
+    DWORD cnt = *reinterpret_cast<DWORD*>(R->ESP() + 0x2C);
+    DWORD off = *reinterpret_cast<DWORD*>(R->ESP() + 0x30);
+    if (g_MapStride > 512 && cnt >= 9999)
+    {
+        cnt = 9999;                       // reuse top slot (pool holds 10,000)
+        off = 9999 * 16;
+    }
+    else
+    {
+        ++cnt;                            // replicate inc ecx / add eax,0x10
+        off += 0x10;
+    }
+    R->ECX(cnt);
+    R->EAX(off);
+    return 0x42C71E;                      // store-back mov [esp+0x2C]/[esp+0x30]
+}
+
 // ============================================================
 //  CELL-TARGET CODEC CoordBase FIX (root cause of the 2048 order bug).
 //
