@@ -284,11 +284,14 @@ DEFINE_HOOK(483B32, MapClass_InlineAccess_Stride, 6)
 //  stride needs patching. (Old hook used size 6 and returned
 //  0x56575C, which was inside the trampoline.)
 // ============================================================
+static void FactoryVtableSentinel();  // defined after DeployDiagLog below
+
 DEFINE_HOOK(565757, MapClass_LeptonOp_Stride, 5)
 {
     R->EDX(R->EDX<int>() * g_MapStride + R->ESI<int>());
     DumpMapStateOnce();  // diagnostic (once) - hot during pan/render
     DumpVisibleCellsLighting();  // lighting probe (once)
+    FactoryVtableSentinel();     // crash-#5 hunt: catch the first factory corruption
     return 0x56575C;  // js 0x56577a
 }
 
@@ -665,6 +668,52 @@ static void DeployDiagLog(const char* fmt, ...)
     va_end(ap);
     fclose(f);
     ++lines;
+}
+
+// ------------------------------------------------------------------
+//  Crash-#5 hunt (snapshot 182948): a SPARSE writer corrupts a mid-game
+//  FactoryClass's embedded vtables at +0x24/+0x28/+0x2C (deltas +10/+20/+10)
+//  plus (id<<16|flags)-style dwords at 12-byte stride nearby -- zone-graph-
+//  flavored, survives all four pool/subzone fixes; likely a stale pointer
+//  into freed pathfinder scratch that the factory allocation reused.
+//  Sentinel: ~every 2s walk the static FactoryClass array (inline items
+//  @0x884B94, count @0x884CF8, capacity 89) and byte-check each factory's
+//  head + embedded vtables. On the FIRST mismatch log frame + index + a
+//  0x60-byte hexdump -> gives the corruption a timestamp to correlate with
+//  the order/path log. Read-only, capped, stride-gated.
+static void FactoryVtableSentinel()
+{
+    static DWORD lastTick = 0;
+    static int events = 0;
+    if (g_MapStride <= 512 || events >= 12) return;
+    DWORD now = GetTickCount();
+    if (now - lastTick < 2000) return;
+    lastTick = now;
+    int count = *reinterpret_cast<int*>(0x884CF8);
+    if (count <= 0 || count > 89) return;
+    for (int i = 0; i < count; ++i)
+    {
+        DWORD fac = reinterpret_cast<DWORD*>(0x884B94)[i];
+        if (fac < 0x110000 || fac > 0x7F000000) continue;   // not a heap ptr
+        const DWORD* p = reinterpret_cast<const DWORD*>(fac);
+        if (p[0] != 0x7EA8A0)   // not a FactoryClass head -> array theory wrong; note once
+        {
+            static bool warned = false;
+            if (!warned) { warned = true; DeployDiagLog("FACSENT array[%d]=%08X head=%08X != 7EA8A0 (identity?)\n", i, fac, p[0]); }
+            continue;
+        }
+        if (p[9] != 0x7EA834 || p[10] != 0x7EA80C || p[11] != 0x7EA7F4)  // +0x24/+0x28/+0x2C
+        {
+            ++events;
+            DeployDiagLog("FACSENT HIT frame=%d fac[%d]=%08X vt24=%08X vt28=%08X vt2C=%08X\n",
+                          *reinterpret_cast<int*>(0xA8ED84), i, fac, p[9], p[10], p[11]);
+            const BYTE* b = reinterpret_cast<const BYTE*>(fac);
+            for (int off = 0; off < 0x60; off += 16)
+                DeployDiagLog("  +%02X: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                              off, b[off], b[off+1], b[off+2], b[off+3], b[off+4], b[off+5], b[off+6], b[off+7],
+                              b[off+8], b[off+9], b[off+10], b[off+11], b[off+12], b[off+13], b[off+14], b[off+15]);
+        }
+    }
 }
 
 // Inside CanDeploySlashUnload, at the operator[] setup:
