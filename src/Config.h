@@ -7,7 +7,8 @@
 //  Reads MAPSIZEEXT.INI from the game directory.
 //
 //  [MapSize]
-//  Stride=512        ; cell-array row stride (power of 2, >=512)
+//  PlaneScale=1      ; preferred: derives Stride and omitted limits
+//  Stride=512        ; legacy cell-array row stride
 //  MaxDimension=512  ; per-axis engine gate (replaces cmp ax,0x200)
 //  MaxWidth=512      ; informational
 //  MaxHeight=512     ; informational
@@ -20,10 +21,12 @@
 
 struct MapSizeConfig
 {
+    int PlaneScale;
     int Stride;
     int MaxWidth;
     int MaxHeight;
     int MaxDimension;   // per-axis engine gate (replaces cmp ax,0x200)
+    bool GeometryConflict;
 
     // Bisection toggles (all default 1 = on). Let a tester disable an
     // individual patch group from the INI to isolate a crash without a
@@ -65,6 +68,18 @@ inline bool IsPowerOfTwo(int value)
 // mutated. The current research line has reviewed strides through 2048.
 inline bool ValidateConfig(const MapSizeConfig& cfg, char* reason, size_t reasonSize)
 {
+    if (cfg.GeometryConflict)
+    {
+        snprintf(reason, reasonSize, "PlaneScale conflicts with explicit Stride");
+        return false;
+    }
+    if (cfg.PlaneScale != 0 &&
+        (!IsPowerOfTwo(cfg.PlaneScale) || cfg.PlaneScale > 4 ||
+         cfg.Stride != 512 * cfg.PlaneScale))
+    {
+        snprintf(reason, reasonSize, "PlaneScale must be one of 1, 2, or 4");
+        return false;
+    }
     if (!IsPowerOfTwo(cfg.Stride) || cfg.Stride < 512 || cfg.Stride > 2048)
     {
         snprintf(reason, reasonSize, "Stride must be one of 512, 1024, or 2048");
@@ -94,10 +109,12 @@ inline bool ValidateConfig(const MapSizeConfig& cfg, char* reason, size_t reason
 inline MapSizeConfig ReadConfig()
 {
     MapSizeConfig cfg;
+    cfg.PlaneScale  = 0;
     cfg.Stride       = 512;
     cfg.MaxWidth     = 512;
     cfg.MaxHeight    = 512;
     cfg.MaxDimension = 512;
+    cfg.GeometryConflict = false;
 
     char iniPath[MAX_PATH];
     GetModuleFileNameA(nullptr, iniPath, MAX_PATH);
@@ -106,10 +123,35 @@ inline MapSizeConfig ReadConfig()
     if (slash) *(slash + 1) = '\0';
     strcat_s(iniPath, "MAPSIZEEXT.INI");
 
-    cfg.Stride       = GetPrivateProfileIntA("MapSize", "Stride",       512, iniPath);
-    cfg.MaxWidth     = GetPrivateProfileIntA("MapSize", "MaxWidth",     512, iniPath);
-    cfg.MaxHeight    = GetPrivateProfileIntA("MapSize", "MaxHeight",    512, iniPath);
-    cfg.MaxDimension = GetPrivateProfileIntA("MapSize", "MaxDimension", 512, iniPath);
+    const UINT missing = 0x80000000u;
+    const UINT configuredScale = GetPrivateProfileIntA(
+        "MapSize", "PlaneScale", static_cast<int>(missing), iniPath);
+    const UINT configuredStride = GetPrivateProfileIntA(
+        "MapSize", "Stride", static_cast<int>(missing), iniPath);
+    const bool hasScale = configuredScale != missing;
+    const bool hasStride = configuredStride != missing;
+    if (hasScale)
+    {
+        cfg.PlaneScale = static_cast<int>(configuredScale);
+        if (cfg.PlaneScale > 0 && cfg.PlaneScale <= 4)
+            cfg.Stride = 512 * cfg.PlaneScale;
+        else
+            cfg.Stride = 0;
+        cfg.GeometryConflict = hasStride &&
+            static_cast<int>(configuredStride) != cfg.Stride;
+    }
+    else if (hasStride)
+    {
+        cfg.Stride = static_cast<int>(configuredStride);
+    }
+
+    const int derivedLogicalSquare = cfg.Stride > 0 ? cfg.Stride / 2 : 0;
+    cfg.MaxWidth = GetPrivateProfileIntA(
+        "MapSize", "MaxWidth", hasScale ? derivedLogicalSquare : 512, iniPath);
+    cfg.MaxHeight = GetPrivateProfileIntA(
+        "MapSize", "MaxHeight", hasScale ? derivedLogicalSquare : 512, iniPath);
+    cfg.MaxDimension = GetPrivateProfileIntA(
+        "MapSize", "MaxDimension", hasScale ? cfg.Stride : 512, iniPath);
 
     cfg.PatchStride    = GetPrivateProfileIntA("Debug", "PatchStride",    1, iniPath);
     cfg.PatchBounds    = GetPrivateProfileIntA("Debug", "PatchBounds",    1, iniPath);

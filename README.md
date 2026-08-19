@@ -49,15 +49,19 @@ No log = Syringe didn't inject the DLL (check step 2).
 
 ```ini
 [MapSize]
-Stride=1024        ; cell-grid row stride (power of two). 512 = vanilla no-op.
-MaxDimension=1024  ; per-axis map size gate (replaces the engine's cmp ax,512)
-MaxWidth=512
-MaxHeight=512
+PlaneScale=2       ; derives Stride=1024 and omitted limits
+;Stride=1024       ; legacy alternative; do not set both unless they agree
 ```
 
-- `Stride=512` makes the whole DLL a **no-op** (vanilla behaviour) — useful to
+- `PlaneScale=1` makes the whole DLL a **no-op** (vanilla behaviour) — useful to
   confirm it loads before enabling.
-- `Stride=1024` → maps up to **512×512** (the tested milestone).
+- `PlaneScale=2` → stride 1024 and maps up to **512×512** (the tested milestone).
+- `PlaneScale=4` → stride 2048 and the 1024×1024 research configuration.
+- Existing INIs using `Stride` remain supported. `PlaneScale` is the preferred
+  single input and rejects a conflicting explicit `Stride`.
+- `tools/materialize_geometry.py` reports the derived operands and dominant
+  allocations for scales 1, 2, 4, and the non-runnable scale-8 experiment; see
+  [`docs/MAP-SCALE.md`](docs/MAP-SCALE.md) for the exact proof boundary.
 - The `[Debug]` section exposes per-patch-group toggles for bisecting problems
   without a rebuild; leave them at their defaults unless you're debugging.
 

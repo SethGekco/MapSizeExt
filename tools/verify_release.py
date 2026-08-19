@@ -76,6 +76,7 @@ with tempfile.TemporaryDirectory() as directory:
 config = (root / "src/Config.h").read_text()
 main = (root / "src/Main.cpp").read_text()
 assert "ValidateConfig" in config and "RuntimeHostProfileSupported" in main
+assert "PlaneScale" in config and "GeometryConflict" in config
 assert struct.unpack_from("<I", data, pe + 8)[0] == 0x3BDF544E
 assert struct.unpack_from("<I", data, optional + 16)[0] == 0x003CD80F
 assert len(data) == 0x0050A940

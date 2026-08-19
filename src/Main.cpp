@@ -97,6 +97,7 @@ static bool ApplyInit()
     if (f)
     {
         fprintf(f, "MapSizeExt v0.3 (init in-game via DllMain)\n");
+        if (cfg.PlaneScale) fprintf(f, "PlaneScale  = %d\n", cfg.PlaneScale);
         fprintf(f, "Stride       = %d\n", g_MapStride);
         fprintf(f, "Total        = %d\n", g_MapTotal);
         fprintf(f, "MaxDimension = %d\n", g_MapMaxDimension);
