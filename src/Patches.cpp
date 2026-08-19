@@ -1,6 +1,7 @@
 #include "Patches.h"
 #include "MapSizeExt.h"
 #include "AresPhobosSites.h"
+#include "generated/BoundsSites_yr1001.h"
 #include <windows.h>
 #include <string.h>
 
@@ -239,8 +240,6 @@ int ApplyBoundsPatches(FILE* log, bool patchCmp, bool patchRootWH)
         return 0;
     }
 
-    const DWORD tStart = 0x00401000;   // .text start
-    const DWORD tEnd   = 0x007E038D;   // .text end (VA)
     const DWORD newDim = (DWORD)g_MapStride;   // 512->1024
     int cmpN = 0, pushN = 0, cmpSkip = 0, cmpRegN = 0, rootN = 0;
 
@@ -249,64 +248,33 @@ int ApplyBoundsPatches(FILE* log, bool patchCmp, bool patchRootWH)
     // These 4 are NOT (they compare a count/pointer, i.e. 256 KB buffer or
     // capacity fields) and corrupt state if bumped -> the Ares null-singleton
     // crash. Always skip them even when patchCmp is on.
-    const DWORD kCmpSkip[] = { 0x565B73, 0x568710, 0x5687A7, 0x568B58 };
-
-    // WARNING: 0x40000 is BOTH 512*512 (cell-array size) AND 256 KB, a very
-    // common buffer/allocation constant. Blindly rewriting every `cmp
-    // eax,0x40000` corrupts unrelated 256 KB buffers. The `push 0x40000`
-    // (VectorClass reserve for the cell array) MUST rise or the array
-    // overflows at stride>512; the `cmp` checks are suspect and gated by
-    // patchCmp so we can bisect. The real cell-bounds checks are already
-    // handled by the IsCellValid/operator[] hooks in Hooks.cpp.
-    for (DWORD va = tStart; va < tEnd - 5; )
+    // Production never scans .text. These exact sites were generated from and
+    // reviewed against the pinned executable; a different layout is skipped
+    // rather than opportunistically matching unrelated constants.
+    auto patchOperand = [&](DWORD va, int off, BYTE opcode) -> bool {
+        if (*reinterpret_cast<BYTE*>(va) != opcode ||
+            *reinterpret_cast<DWORD*>(va + off) != 0x40000u) return false;
+        DWORD old = 0;
+        if (!VirtualProtect(reinterpret_cast<void*>(va + off), 4,
+                            PAGE_EXECUTE_READWRITE, &old)) return false;
+        *reinterpret_cast<DWORD*>(va + off) = newTotal;
+        DWORD ignored = 0;
+        return VirtualProtect(reinterpret_cast<void*>(va + off), 4, old, &ignored) != FALSE;
+    };
+    if (patchCmp)
     {
-        const BYTE op = *reinterpret_cast<BYTE*>(va);
-        if ((op == 0x3D || op == 0x68) &&
-            *reinterpret_cast<DWORD*>(va + 1) == 0x00040000)
+        for (int i = 0; i < kBoundsCmpEaxSites_n; ++i)
+            if (patchOperand(kBoundsCmpEaxSites[i], 1, 0x3D)) ++cmpN;
+        for (int i = 0; i < kBoundsCmpRegSites_n; ++i)
         {
-            if (op == 0x3D && !patchCmp) { ++cmpSkip; va += 5; continue; }
-            if (op == 0x3D)
-            {
-                bool skip = false;
-                for (DWORD s : kCmpSkip) if (s == va) { skip = true; break; }
-                if (skip) { ++cmpSkip; va += 5; continue; }
-            }
-            DWORD oldProt = 0;
-            void* p = reinterpret_cast<void*>(va + 1);
-            if (VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt))
-            {
-                *reinterpret_cast<DWORD*>(va + 1) = newTotal;
-                VirtualProtect(p, 4, oldProt, &oldProt);
-                if (op == 0x3D) ++cmpN; else ++pushN;
-            }
-            va += 5;
-        }
-        // cmp reg,0x40000 (81 /7, modrm 0xF8..0xFF) -- the cell loop bounds my
-        // `cmp eax` (3D) scan missed. All 37 are in cell code (verified). Only
-        // when patchCmp (same class as the cmp-eax cell checks).
-        else if (patchCmp && op == 0x81)
-        {
+            const DWORD va = kBoundsCmpRegSites[i];
             const BYTE modrm = *reinterpret_cast<BYTE*>(va + 1);
-            if (modrm >= 0xF8 && modrm <= 0xFF &&
-                *reinterpret_cast<DWORD*>(va + 2) == 0x00040000)
-            {
-                DWORD oldProt = 0;
-                void* p = reinterpret_cast<void*>(va + 2);
-                if (VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &oldProt))
-                {
-                    *reinterpret_cast<DWORD*>(va + 2) = newTotal;
-                    VirtualProtect(p, 4, oldProt, &oldProt);
-                    ++cmpRegN;
-                }
-                va += 6;
-            }
-            else va += 1;
-        }
-        else
-        {
-            va += 1;
+            if (modrm >= 0xF8 && modrm <= 0xFF && patchOperand(va, 2, 0x81)) ++cmpRegN;
         }
     }
+    else cmpSkip = kBoundsCmpEaxSites_n + kBoundsCmpRegSites_n;
+    for (int i = 0; i < kBoundsPushSites_n; ++i)
+        if (patchOperand(kBoundsPushSites[i], 1, 0x68)) ++pushN;
 
     // Root map dimensioning in MapClass::Init @0x565800: the cell array is
     // allocated from these plain-immediate constants (not shl/cmp forms).
@@ -1196,4 +1164,58 @@ int ApplyIsoPatches(FILE* log)
     if (log) fprintf(log, "[iso] tactical cell sites -> stride %d : patched %d/%d\n",
                      g_MapStride, patched, count);
     return patched;
+}
+bool SetReloadIteratorState(bool widened)
+{
+    struct Site { DWORD va; BYTE size; BYTE stock[6]; BYTE scaled[6]; };
+    const int shift = Log2Exact(g_MapStride);
+    if (shift < 9) return false;
+    const DWORD disp = static_cast<DWORD>(4 - 4 * g_MapStride);
+    const DWORD total = static_cast<DWORD>(g_MapTotal);
+    Site sites[5] = {
+        {0x5782BD,6,{0x8D,0x85,0x04,0xF8,0xFF,0xFF},{0x8D,0x85,0,0,0,0}},
+        {0x578321,3,{0xC1,0xE0,0x09},{0xC1,0xE0,static_cast<BYTE>(shift)}},
+        {0x578375,3,{0xC1,0xE0,0x0B},{0xC1,0xE0,static_cast<BYTE>(shift + 2)}},
+        {0x57847B,3,{0xC1,0xE0,0x09},{0xC1,0xE0,static_cast<BYTE>(shift)}},
+        {0x578482,5,{0x3D,0x00,0x00,0x04,0x00},{0x3D,0,0,0,0}},
+    };
+    memcpy(&sites[0].scaled[2], &disp, 4);
+    memcpy(&sites[4].scaled[1], &total, 4);
+    for (int i = 0; i < 5; ++i)
+    {
+        const BYTE* from = widened ? sites[i].stock : sites[i].scaled;
+        if (memcmp(reinterpret_cast<void*>(sites[i].va), from, sites[i].size) != 0)
+            return false;
+    }
+    int applied = 0;
+    for (; applied < 5; ++applied)
+    {
+        const BYTE* to = widened ? sites[applied].scaled : sites[applied].stock;
+        DWORD old = 0;
+        if (!VirtualProtect(reinterpret_cast<void*>(sites[applied].va), sites[applied].size,
+                            PAGE_EXECUTE_READWRITE, &old)) break;
+        memcpy(reinterpret_cast<void*>(sites[applied].va), to, sites[applied].size);
+        DWORD ignored = 0;
+        const BOOL restored = VirtualProtect(reinterpret_cast<void*>(sites[applied].va),
+                                              sites[applied].size, old, &ignored);
+        FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(sites[applied].va),
+                              sites[applied].size);
+        if (!restored) { ++applied; break; }
+    }
+    if (applied == 5) return true;
+    while (applied-- > 0)
+    {
+        const BYTE* rollback = widened ? sites[applied].stock : sites[applied].scaled;
+        DWORD old = 0;
+        if (VirtualProtect(reinterpret_cast<void*>(sites[applied].va), sites[applied].size,
+                           PAGE_EXECUTE_READWRITE, &old))
+        {
+            memcpy(reinterpret_cast<void*>(sites[applied].va), rollback, sites[applied].size);
+            DWORD ignored = 0;
+            VirtualProtect(reinterpret_cast<void*>(sites[applied].va), sites[applied].size,
+                           old, &ignored);
+        }
+    }
+    FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+    return false;
 }

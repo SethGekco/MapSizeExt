@@ -81,6 +81,10 @@ int ApplyAdjacencyPatch(FILE* log);
 // the stride. Gated by [Debug] PatchIso (default 0). NO-OP at 512.
 int ApplyIsoPatches(FILE* log);
 
+// Temporarily restores the five phase-sensitive iterator operands while stock
+// post-load reconstruction runs, then reapplies the configured geometry.
+bool SetReloadIteratorState(bool widened);
+
 // Forces the safe DisplayClass render path at 0x657CF0 (avoids the Ares
 // +0x7C override that dereferences the never-initialized 0x880A04).
 int ApplyGuardPatches(FILE* log);

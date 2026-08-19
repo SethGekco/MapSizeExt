@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <cstdio>
 
 // ============================================================
 //  Config.h
@@ -55,6 +56,41 @@ struct MapSizeConfig
     int Total() const { return Stride * Stride; }
 };
 
+inline bool IsPowerOfTwo(int value)
+{
+    return value > 0 && (value & (value - 1)) == 0;
+}
+
+// Reject inconsistent geometry before any executable or extension bytes are
+// mutated. The current research line has reviewed strides through 2048.
+inline bool ValidateConfig(const MapSizeConfig& cfg, char* reason, size_t reasonSize)
+{
+    if (!IsPowerOfTwo(cfg.Stride) || cfg.Stride < 512 || cfg.Stride > 2048)
+    {
+        snprintf(reason, reasonSize, "Stride must be one of 512, 1024, or 2048");
+        return false;
+    }
+
+    const unsigned __int64 total =
+        static_cast<unsigned __int64>(cfg.Stride) * static_cast<unsigned>(cfg.Stride);
+    if (total > 0x7FFFFFFFu || total * 4ull > 0xFFFFFFFFu)
+    {
+        snprintf(reason, reasonSize, "derived cell plane exceeds engine operand widths");
+        return false;
+    }
+
+    const __int64 configuredSpan = static_cast<__int64>(cfg.MaxWidth) + cfg.MaxHeight;
+    if (cfg.MaxWidth < 1 || cfg.MaxHeight < 1 || cfg.MaxDimension < 1 ||
+        cfg.MaxDimension > cfg.Stride ||
+        (cfg.Stride > 512 && configuredSpan > cfg.Stride))
+    {
+        snprintf(reason, reasonSize,
+                 "map limits must be positive, fit Stride, and have MaxWidth+MaxHeight <= Stride");
+        return false;
+    }
+    return true;
+}
+
 inline MapSizeConfig ReadConfig()
 {
     MapSizeConfig cfg;
@@ -91,12 +127,6 @@ inline MapSizeConfig ReadConfig()
     cfg.CuratedBase    = GetPrivateProfileIntA("Debug", "CuratedBase",    0, iniPath);
     cfg.StrideSkipFrom = GetPrivateProfileIntA("Debug", "StrideSkipFrom", 0, iniPath);
     cfg.StrideSkipTo   = GetPrivateProfileIntA("Debug", "StrideSkipTo",   0, iniPath);
-
-    // Clamp: never go below the vanilla values.
-    if (cfg.Stride       < 512) cfg.Stride       = 512;
-    if (cfg.MaxDimension < 512) cfg.MaxDimension = 512;
-    if (cfg.MaxWidth     < 1)   cfg.MaxWidth     = cfg.Stride;
-    if (cfg.MaxHeight    < 1)   cfg.MaxHeight    = cfg.Stride;
 
     return cfg;
 }

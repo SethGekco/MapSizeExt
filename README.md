@@ -79,6 +79,10 @@ MSVC via GitHub Actions (the `.syhks00` Syringe section requires the MSVC
 toolchain). Push to the repo and Actions builds `MapSizeExt.dll`, or run the
 `build.yml` workflow manually. YRpp headers live in `YRpp/`.
 
+The pinned executable and generated patch manifest can be checked locally with
+`tools/verify_release.py --exe /path/to/gamemd.exe`. See
+[`docs/SAFETY-HARDENING.md`](docs/SAFETY-HARDENING.md) for its proof boundary.
+
 ## How it works (short version)
 
 The engine addresses cells as `Cells[Y*512 + X]`, with `512` baked in as

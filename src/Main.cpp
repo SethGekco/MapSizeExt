@@ -4,6 +4,31 @@
 #include <Syringe.h>
 #include <windows.h>
 #include <cstdio>
+#include <cstring>
+
+namespace {
+constexpr DWORD kExpectedTimestamp = 0x3BDF544E;
+constexpr DWORD kSteamFileSize = 0x0050A940;
+constexpr DWORD kSteamCRC = 0xA3F19485;
+constexpr DWORD kSpawnerFileSize = 0x00497110;
+constexpr DWORD kSpawnerCRC = 0x098465B3;
+constexpr DWORD kTesterSpawnerCRC = 0xD114B054;
+
+bool RuntimeHostProfileSupported()
+{
+    const BYTE* base = reinterpret_cast<const BYTE*>(GetModuleHandleA(NULL));
+    if (!base) return false;
+    const IMAGE_DOS_HEADER* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0) return false;
+    const IMAGE_NT_HEADERS32* nt =
+        reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC) return false;
+    return nt->FileHeader.TimeDateStamp == kExpectedTimestamp &&
+        nt->OptionalHeader.AddressOfEntryPoint == 0x003CD80F &&
+        (nt->OptionalHeader.SizeOfImage == 0x00804000 ||
+         nt->OptionalHeader.SizeOfImage == 0x00793000);
+}
 
 // ============================================================
 //  Main.cpp  -  DLL entry + one-time patch/init.
@@ -32,9 +57,15 @@ static void PatchDword(DWORD va, DWORD value)
 }
 
 // One-time init, run in gamemd's process from DllMain.
-static void ApplyInit()
+static bool ApplyInit()
 {
     MapSizeConfig cfg = ReadConfig();
+    char reason[256] = {};
+    if (!ValidateConfig(cfg, reason, sizeof(reason)) || !RuntimeHostProfileSupported())
+    {
+        OutputDebugStringA(reason[0] ? reason : "MapSizeExt: unsupported executable profile");
+        return false;
+    }
     g_MapStride       = cfg.Stride;
     g_MapTotal        = cfg.Total();     // Stride * Stride
     g_MapMaxW         = cfg.MaxWidth;
@@ -133,7 +164,9 @@ static void ApplyInit()
         if (cfg.PatchIso)     ApplyIsoPatches(nullptr);
         }
     }
+    return true;
 }
+} // namespace
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
 {
@@ -147,8 +180,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         GetModuleFileNameA(nullptr, exe, MAX_PATH);
         const char* base = strrchr(exe, '\\');
         base = base ? base + 1 : exe;
-        if (_strnicmp(base, "gamemd", 6) == 0)
-            ApplyInit();
+        if (_strnicmp(base, "gamemd", 6) == 0 && !ApplyInit()) return FALSE;
     }
     return TRUE;
 }
@@ -157,11 +189,16 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
 // do NOT patch or read config here (wrong process / gamemd not loaded).
 SYRINGE_HANDSHAKE(pInfo)
 {
-    if (pInfo->cbSize >= sizeof(SyringeHandshakeInfo))
-    {
-        static const char msg[] = "MapSizeExt " __DATE__;
-        pInfo->Message    = const_cast<char*>(msg);
-        pInfo->cchMessage = sizeof(msg) - 1;
-    }
-    return S_OK;
+    if (!pInfo || pInfo->cbSize < static_cast<int>(sizeof(SyringeHandshakeInfo)))
+        return E_INVALIDARG;
+    const bool steam = pInfo->exeFilesize == kSteamFileSize &&
+        pInfo->exeTimestamp == kExpectedTimestamp && pInfo->exeCRC == kSteamCRC;
+    const bool spawner = pInfo->exeFilesize == kSpawnerFileSize &&
+        pInfo->exeTimestamp == kExpectedTimestamp &&
+        (pInfo->exeCRC == kSpawnerCRC || pInfo->exeCRC == kTesterSpawnerCRC);
+    static char accepted[] = "MapSizeExt: supported YR 1.001 profile";
+    static char rejected[] = "MapSizeExt: unsupported executable profile";
+    pInfo->Message = (steam || spawner) ? accepted : rejected;
+    pInfo->cchMessage = static_cast<int>(strlen(pInfo->Message));
+    return (steam || spawner) ? S_OK : S_FALSE;
 }

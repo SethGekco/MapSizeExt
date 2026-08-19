@@ -1,8 +1,10 @@
 #include "MapSizeExt.h"
 #include "Config.h"
+#include "Patches.h"
 #include <Syringe.h>
 #include <windows.h>
 #include <cstdio>
+#include <cstdint>
 #include <cstdarg>
 
 // ============================================================
@@ -37,6 +39,19 @@ int g_MapMaxW         = 512;
 int g_MapMaxH         = 512;
 int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
 int g_CoordBase       = 1000;    // per-map cell-number base (1000 = vanilla)
+
+static bool IsReadableRange(const void* pointer, size_t size)
+{
+    if (!pointer || !size) return false;
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (!VirtualQuery(pointer, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+        (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false;
+    const uintptr_t begin = reinterpret_cast<uintptr_t>(pointer);
+    const uintptr_t end = begin + size;
+    const uintptr_t regionEnd =
+        reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+    return end >= begin && end <= regionEnd;
+}
 
 // ============================================================
 //  HOOK A: MapClass::operator[](Cell&)  @ 0x5656EA (7 bytes)
@@ -511,8 +526,37 @@ DEFINE_HOOK(68839A, Spawn_AssignerDiag, 6)
     return 0;   // read-only probe
 }
 
+// Expanded iterators must temporarily return to stock geometry while the
+// deserializer rebuilds radar state, then be restored according to the loaded
+// plane's exact capacity. Unknown capacities fail closed.
+DEFINE_HOOK(68512B, MapSizeExt_LoadBeforePostLoadReinit, 5)
+{
+    if (g_MapStride <= 512) return 0;
+    if (!SetReloadIteratorState(false))
+        TerminateProcess(GetCurrentProcess(), 0xE5120002u);
+    R->EAX(*reinterpret_cast<DWORD*>(0x00A8B230)); // stolen mov eax,[0xA8B230]
+    return 0x685130;
+}
+
+DEFINE_HOOK(67E694, MapSizeExt_LoadAfterTabInit, 5)
+{
+    if (g_MapStride <= 512) return 0;
+    const DWORD capacity = *reinterpret_cast<DWORD*>(0x0087F7E8 + 0x140);
+    if (capacity == static_cast<DWORD>(g_MapTotal))
+    {
+        if (!SetReloadIteratorState(true))
+            TerminateProcess(GetCurrentProcess(), 0xE5120003u);
+    }
+    else if (capacity != 0x40000u)
+    {
+        TerminateProcess(GetCurrentProcess(), 0xE5120004u);
+    }
+    R->EBX(1); // stolen mov ebx,1
+    return 0x67E699;
+}
+
 // ============================================================
-//  TIBERIUM per-type buffer realloc guard + diagnostic  (fn @0x722D00)
+//  TIBERIUM per-type buffer realloc guard  (fn @0x722D00)
 //
 //  On map (re)load the engine reallocates, for EACH tiberium type in the global
 //  TiberiumClass array [0xB0F4EC] (count [0xB0F4F8]), three map-area-sized buffers:
@@ -523,15 +567,39 @@ DEFINE_HOOK(68839A, Spawn_AssignerDiag, 6)
 //  returns null the zero-fill @0x722E19 writes through null (the C0000005 that
 //  blocks big maps). This is the fill loop head (xor eax,eax / cmp count / jl):
 //    722E0F: xor eax,eax   722E11: cmp ecx,ebx   722E13: jl 0x722E28
-//  Guard it: skip the fill when the buffer is null (turn the crash into graceful
-//  empty-ore), and log MapRect/COUNT/buffer once so we can tell an INFLATED COUNT
-//  (sizing bug) from a genuine allocation failure (32-bit OOM). esi = the vector
-//  struct ([+4]=COUNT, [+8]=buffer). Resume 0x722E15 (fill) with eax=0, else 0x722E28.
+//  The downstream consumer dereferences every allocation without checking it,
+//  so skipping this fill merely moves the crash. Validate the complete sizing
+//  contract and fail deterministically until a scenario-load abort path is proven.
+//  esi = the VectorClass ([+4]=COUNT, [+8]=buffer), edi = the owner object.
 DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
 {
+    if (g_MapStride <= 512) return 0;
     char* self  = reinterpret_cast<char*>(R->ESI());
+    char* owner = reinterpret_cast<char*>(R->EDI());
     int   count = *reinterpret_cast<int*>(self + 4);
     void* buf   = *reinterpret_cast<void**>(self + 8);
+
+    const __int64 rw = *reinterpret_cast<int*>(0x87F8DC);
+    const __int64 rh = *reinterpret_cast<int*>(0x87F8E0);
+    const __int64 checkedCount = (rh + 4) * rw * 2;
+    const bool sizesValid = rw > 0 && rh > 0 && checkedCount > 0 &&
+        checkedCount <= 0x7FFFFFFFll && checkedCount * 8 <= 0xFFFFFFFFll &&
+        checkedCount * 4 + 4 <= 0xFFFFFFFFll && count == checkedCount;
+    const bool allocationsValid = owner && buf &&
+        *reinterpret_cast<void**>(owner + 0x114) &&
+        *reinterpret_cast<void**>(owner + 0x118);
+
+    // 0x7233A0 immediately consumes all three allocations without null checks.
+    // Continuing with an "empty" vector only moves the AV to 0x7233C2/0x7233E5.
+    if (!sizesValid || !allocationsValid)
+    {
+        char msg[256];
+        sprintf_s(msg, "MapSizeExt: tiberium allocation failed (map=%lldx%lld count=%d)\n",
+                  rw, rh, count);
+        OutputDebugStringA(msg);
+        TerminateProcess(GetCurrentProcess(), 0xE5120001u);
+        return 0;
+    }
 
     if (g_MapStride > 512)
     {
@@ -555,7 +623,6 @@ DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
         }
     }
 
-    if (!buf || count <= 0) return 0x722E28;   // crash guard: skip the fill
     R->EAX(0);                                 // replicate the stolen 'xor eax,eax'
     return 0x722E15;                           // resume the zero-fill loop
 }
@@ -891,7 +958,7 @@ DEFINE_HOOK(565766, GetCellAt_GarbageGuard, 6)
     DWORD cell = *reinterpret_cast<DWORD*>(items + static_cast<DWORD>(index) * 4);
     if (g_MapStride > 512 && g_CrashGuard && cell)
     {
-        bool ok = (cell >= 0x04000000 && cell < 0x40000000);   // plausible heap object
+        bool ok = IsReadableRange(reinterpret_cast<void*>(cell + 0x24), 4);
         if (ok)
         {
             const int ex = index % static_cast<int>(g_MapStride);

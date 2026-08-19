@@ -67,6 +67,7 @@
     <ClInclude Include="src\MapSizeExt.h" />
     <ClInclude Include="src\Config.h" />
     <ClInclude Include="src\Patches.h" />
+    <ClInclude Include="src\generated\BoundsSites_yr1001.h" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
