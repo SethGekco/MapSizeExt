@@ -1321,10 +1321,12 @@ DEFINE_HOOK(58215B, Subzone_SaturateID, 5)   // mov cx,[esp+0x10]
     if (g_MapStride > 512)
     {
         DWORD id = *reinterpret_cast<DWORD*>(R->ESP() + 0x10);
-        // Curated mode applies his 14 movsx->movzx consumers, so the full unsigned
-        // range is safe: cap at 0xFFFE (reserve 0xFFFF). Broad mode keeps signed
-        // consumers -> cap at 0x7FFF to stay positive.
-        DWORD cap = g_CuratedBase ? 0xFFFEu : 0x7FFFu;
+        // BOTH modes now apply the 14 movsx->movzx consumers
+        // (ApplySubzoneMovzxPatches), so the full unsigned 16-bit range is
+        // safe: cap at 0xFFFE (reserve 0xFFFF = out-of-domain sentinel).
+        // Crash-dump proof this matters (2026-08-18): 700x700 @ 2048 stores
+        // 60,638 ids -- far past 0x7FFF but comfortably under this cap.
+        DWORD cap = 0xFFFEu;
         if (id > cap) id = cap;
         R->ECX((R->ECX() & 0xFFFF0000u) | (id & 0xFFFF));  // replicate mov cx with the cap
         return 0x582160;                                   // continue past the mov

@@ -89,3 +89,7 @@ int ApplyGuardPatches(FILE* log);
 // +2 Phobos), the false-positive-free alternative to our broad inline sweep.
 // Used when [Debug] CuratedBase=1. See src/CuratedBase.cpp and docs/BUG-ATLAS.md.
 int ApplyCuratedBase(FILE* log);
+
+// The 14 subzone-id movsx->movzx consumer patches (unsigned 16-bit id
+// namespace). Applied in BOTH curated and broad modes; no-op at stride 512.
+int ApplySubzoneMovzxPatches(FILE* log);

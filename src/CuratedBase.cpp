@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include "MapSizeExt.h"
 
 namespace {
 
@@ -148,6 +149,34 @@ int writeBytes(DWORD va, const BYTE* exp, const BYTE* rep, BYTE n)
 
 } // namespace
 
+// The 14 subzone-ID consumers, movsx -> movzx (unsigned 16-bit id namespace).
+// Standalone so BROAD mode can apply it too: crash-dump RE (2026-08-18,
+// snapshots 120606/130248) proved the 700x700 @ stride 2048 map stores
+// 60,638 subzone ids ([Map+0x74]=60,639 level-0 regions; 441,236 cells carry
+// ids >= 0x8000 in the table @[Map+0x70]) -> every movsx consumer reads them
+// NEGATIVE -> negative per-id array indexing writes below the A* per-level
+// buffers (the vtable low-byte heap corruption) AND mis-routes the last-scanned
+// (bottom-left) region. movzx is identity for ids < 0x8000, so this is safe on
+// any map; gate on stride anyway to stay a strict no-op at 512.
+int ApplySubzoneMovzxPatches(FILE* log)
+{
+    if (g_MapStride <= 512)
+    {
+        if (log) fprintf(log, "[subzone] movzx consumers: no-op (stride %d)\n", g_MapStride);
+        return 0;
+    }
+    int mz = 0;
+    for (const auto& s : kSubzoneMovzx)
+    {
+        BYTE rep[5];
+        memcpy(rep, s.expected, s.size);
+        rep[1] = 0xb7;                       // movsx (0xbf) -> movzx (0xb7)
+        if (writeBytes(s.address, s.expected, rep, s.size)) ++mz;
+    }
+    if (log) fprintf(log, "[subzone] movzx consumers %d/14 (unsigned 16-bit id namespace)\n", mz);
+    return mz;
+}
+
 // Applies Krisztiaan's curated conversion. Returns base patches applied.
 int ApplyCuratedBase(FILE* log)
 {
@@ -159,14 +188,7 @@ int ApplyCuratedBase(FILE* log)
         else { ++baseSkip; if (log) fprintf(log, "[curated] SKIP 0x%06X (bytes mismatch/already-patched)\n", p.address); }
     }
 
-    int mz = 0;
-    for (const auto& s : kSubzoneMovzx)
-    {
-        BYTE rep[5];
-        memcpy(rep, s.expected, s.size);
-        rep[1] = 0xb7;                       // movsx (0xbf) -> movzx (0xb7)
-        if (writeBytes(s.address, s.expected, rep, s.size)) ++mz;
-    }
+    int mz = ApplySubzoneMovzxPatches(nullptr);
 
     int mod = 0, modTot = (int)(sizeof(kModule) / sizeof(kModule[0]));
     for (const auto& m : kModule)
