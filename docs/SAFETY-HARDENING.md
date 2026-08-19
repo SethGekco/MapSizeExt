@@ -20,4 +20,4 @@ order-codec, Phobos, subzone, or A* work.
 `tools/verify_release.py` pins the executable SHA-256, critical hook prologues,
 all 437 stride sites, and reproducibility of the generated bounds manifest.
 This is static proof only; the PR still requires an MSVC build and fresh Windows
-runtime regression on 512- and 1024-stride scenarios.
+runtime regression on 512-, 1024-, and 2048-stride scenarios.
