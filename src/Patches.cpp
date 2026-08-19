@@ -2,6 +2,7 @@
 #include "MapSizeExt.h"
 #include "AresPhobosSites.h"
 #include <windows.h>
+#include <string.h>
 
 // ============================================================
 //  Phase 2 stride sites (map-stride `shl reg,0x9` multiplies).
@@ -554,9 +555,72 @@ static const ByteEdit kSubzoneScale[] = {
     {0x584D12,3,{0x8d,0x45,0x08},{0x8d,0x45,0x10}},
     {0x584E0B,3,{0x8d,0x45,0x08},{0x8d,0x45,0x10}},
 };
+// Stride 2048 needs the block grid coarsened ONE MORE doubling (8-cell -> 16-cell
+// for the low hierarchy level, 16 -> 32 for the high level) so the subzone COUNT
+// stays under the signed-16-bit limit 0x7FFF. Measured: at stride 2048 the 4->8
+// scaling still produced 0x871E (34590) subzones on a 1000x1000 map -> a signed
+// consumer read (movswl @0x429E9A) went negative -> C0000005 @0x429EA4. Same 17
+// audited sites as kSubzoneScale, with each replacement immediate doubled again:
+// lea +1->+3 (block 1<<(pass+3)), and 3->0xF (mod 16), sar 2->4 (/16), the 8-cell
+// levels and 0x8000_0007->0x8000_001F / or -8->-32 / lea extent 8->32. ~1/4 the
+// subzones of 4->8 -> ~8600 on 1000x1000, well under 0x7FFF (also cuts pathfinding
+// cost = the severe big-map lag). Expected bytes are identical (native binary).
+static const ByteEdit kSubzoneScale2048[] = {
+    {0x5820B6,3,{0x8d,0x4d,0x01},{0x8d,0x4d,0x03}},
+    {0x582272,3,{0x83,0xe2,0x03},{0x83,0xe2,0x0f}},
+    {0x58227E,3,{0xc1,0xf8,0x02},{0xc1,0xf8,0x04}},
+    {0x582294,3,{0x83,0xe2,0x03},{0x83,0xe2,0x0f}},
+    {0x58229D,3,{0xc1,0xf8,0x02},{0xc1,0xf8,0x04}},
+    {0x58458F,3,{0x8d,0x4d,0x01},{0x8d,0x4d,0x03}},
+    {0x584A52,3,{0x83,0xe2,0x03},{0x83,0xe2,0x0f}},
+    {0x584A57,3,{0xc1,0xf8,0x02},{0xc1,0xf8,0x04}},
+    {0x584A65,3,{0x83,0xe2,0x03},{0x83,0xe2,0x0f}},
+    {0x584A6A,3,{0xc1,0xf8,0x02},{0xc1,0xf8,0x04}},
+    {0x584CD6,6,{0x81,0xe2,0x07,0x00,0x00,0x80},{0x81,0xe2,0x1f,0x00,0x00,0x80}},
+    {0x584CDF,3,{0x83,0xca,0xf8},{0x83,0xca,0xe0}},
+    {0x584CED,5,{0x25,0x07,0x00,0x00,0x80},{0x25,0x1f,0x00,0x00,0x80}},
+    {0x584CF9,3,{0x83,0xc8,0xf8},{0x83,0xc8,0xe0}},
+    {0x584D03,3,{0x8d,0x4f,0x08},{0x8d,0x4f,0x20}},
+    {0x584D12,3,{0x8d,0x45,0x08},{0x8d,0x45,0x20}},
+    {0x584E0B,3,{0x8d,0x45,0x08},{0x8d,0x45,0x20}},
+};
 int ApplySubzoneScalePatches(FILE* log)
 {
     if (g_MapStride == 512) { if (log) fprintf(log, "[subzone] scale stays 4-cell  [no-op]\n"); return 0; }
+
+    // Pick the scale by MAP SIZE, not stride (2026-08-18). The 4->8 table is
+    // Krisztiaan's PROVEN set (corners fully reachable at 1024); the 4->16
+    // doubling is derived and SUSPECT: at scale 16 the outermost partial block
+    // is ~16 cells deep and user-observed edge cells (and the margin-12 spawn
+    // positions!) refuse all pathing at 2048 -- consistent with broken zone
+    // assignment in fringe blocks. 4->16 is only NEEDED when 8-cell-block
+    // subzone ids would overflow the signed-16-bit cap (~1000x1000+), so use
+    // the proven table whenever it fits. Map size read from spawnmap.ini
+    // (written by the client before launch, same mechanism as CoordBase).
+    bool use16 = false;
+    if (g_MapStride >= 2048)
+    {
+        char ini[MAX_PATH];
+        GetModuleFileNameA(nullptr, ini, MAX_PATH);
+        char* s = strrchr(ini, '\\'); if (s) *(s + 1) = '\0';
+        strcat_s(ini, "spawnmap.ini");
+        char buf[64] = { 0 };
+        GetPrivateProfileStringA("Map", "Size", "", buf, sizeof(buf), ini);
+        int mx = 0, my = 0, mw = 0, mh = 0;
+        if (sscanf_s(buf, "%d,%d,%d,%d", &mx, &my, &mw, &mh) == 4 && mw > 0 && mh > 0)
+        {
+            const int est = ((2 * mw - 1) * mh) / 64;   // ~subzone ids at 8-cell blocks
+            use16 = est > 28000;                        // headroom under 0x7FFF
+            if (log) fprintf(log, "[subzone] map %dx%d -> ~%d ids at scale 8\n", mw, mh, est);
+        }
+        else use16 = true;                              // size unknown -> overflow-safe
+    }
+    if (use16)
+    {
+        int n = ApplyByteEdits(kSubzoneScale2048, sizeof(kSubzoneScale2048)/sizeof(ByteEdit), log, "subzone");
+        if (log) fprintf(log, "[subzone] hierarchy block scale 4->16 (big map) : %d/17\n", n);
+        return n;
+    }
     int n = ApplyByteEdits(kSubzoneScale, sizeof(kSubzoneScale)/sizeof(ByteEdit), log, "subzone");
     if (log) fprintf(log, "[subzone] hierarchy block scale 4->8 : %d/17\n", n);
     return n;
@@ -747,6 +811,205 @@ int ApplyPhobosPatches(FILE* log)
         kPhobosAnd1ff2, kPhobosAnd1ff2_n, kPhobosSar2, kPhobosSar2_n, log);
 }
 
+// Phobos compiles YRpp's inline MapClass::TryGetCellAt / GetCellAt into many hooks:
+//   GetCellIndex = (Y<<9)+X  (stride 512), then a MaxCells bound `cmp idx,0x3FFFF ; ja`,
+//   then the cell fetch `Cells.Items[idx]` = `mov reg,[MapClass+0x13C] ; [reg+idx*4]`.
+// Our curated kPhobosShl(48) was derived against an OLDER Phobos and misses every
+// GetCellIndex added since (Customizable Ore Spawners was the one that folded ore to
+// (X, Y/2); an audit found 12 more -- bullet trajectories, missile targeting, crate
+// placement, deploy, radiation sites, save). Rather than hardcode build-specific RVAs
+// (which go stale on every Phobos update -- exactly what caused this), SCAN Phobos.dll's
+// .text at load for the full pattern and patch shift+bound on any site whose shift is
+// STILL 0x09 (i.e. not already covered by kPhobosShl -- those run first and are left
+// untouched). The three-part signature (shl9 + 0x3FFFF bound + [+0x13C] Cells.Items)
+// is specific to real cell indices, so it never touches the non-cell shl9 that broke
+// pathfinding when the whole list was patched blindly. Everything is byte-verified.
+static int ApplyPhobosCellIndexScan(int shift, DWORD total, FILE* log)
+{
+    HMODULE h = GetModuleHandleA("Phobos.dll");
+    if (!h) return 0;
+    BYTE* base = reinterpret_cast<BYTE*>(h);
+    BYTE* nt = base + *reinterpret_cast<DWORD*>(base + 0x3C);
+    const int nsec = *reinterpret_cast<WORD*>(nt + 6);
+    BYTE* sec = nt + 0x18 + *reinterpret_cast<WORD*>(nt + 0x14);
+    BYTE* t0 = nullptr; BYTE* t1 = nullptr;
+    for (int i = 0; i < nsec; ++i)
+    {
+        BYTE* s = sec + i * 40;
+        if (memcmp(s, ".text", 5) == 0)
+        {
+            t0 = base + *reinterpret_cast<DWORD*>(s + 12);
+            t1 = t0 + *reinterpret_cast<DWORD*>(s + 8);   // VirtualSize
+            break;
+        }
+    }
+    if (!t0) return 0;
+
+    int n = 0;
+    for (BYTE* p = t0; p + 48 < t1; ++p)
+    {
+        if (p[0] != 0xC1 || p[1] < 0xE0 || p[1] > 0xE7 || p[2] != 0x09) continue;  // shl reg,9 (only unpatched)
+        BYTE* bnd = nullptr;                                        // cmp idx,0x3FFFF within 20 bytes
+        for (BYTE* q = p + 3; q < p + 23; ++q)
+            if (q[0]==0xFF && q[1]==0xFF && q[2]==0x03 && q[3]==0x00) { bnd = q; break; }
+        if (!bnd) continue;
+        bool cells = false;                                        // Cells.Items [reg+0x13C] within ~40 bytes
+        for (BYTE* q = bnd; q + 4 < p + 48; ++q)
+            if (q[0]==0x3C && q[1]==0x01 && q[2]==0x00 && q[3]==0x00) { cells = true; break; }
+        if (!cells) continue;
+        int did = PatchShiftC1(reinterpret_cast<DWORD>(p), static_cast<BYTE>(shift));   // 9 -> shift
+        PatchImm32(reinterpret_cast<DWORD>(bnd), 0, 0x3FFFF, total - 1);                // 0x3FFFF -> stride^2-1
+        n += did;
+    }
+    if (log) fprintf(log, "[dll] Phobos GetCellIndex scan: patched %d newer cell-index sites (ore spawner + others)\n", n);
+    return n;
+}
+
+// ============================================================
+//  Phobos WAYPOINT CoordBase patch (the stride-2048 spawn fix).
+//
+//  Phobos's waypoint rework REPLACES the vanilla [Waypoints] reader (its hook
+//  returns straight to 0x68BDB3), parses every entry itself and hardcodes
+//  base 1000:
+//     RVA 0x800F5  Y = N/1000   (0x10624DD3 reciprocal-multiply, 17 bytes)
+//     RVA 0x80109  imul eax,ebp,1000 ; ... ; sub esi,eax  -> X = N - Y*1000
+//  so the engine's Scenario.Waypoints stays empty/sentinel and our gamemd
+//  CoordBase hook @0x68BE0C is dead code in this flow. Proven 2026-08-17 on
+//  700x700: every spawn landed at the base-1000 decode of its base-2048 value
+//  (wp0 741739 -> (739,741) on-map; wp3/wp7 -> ry 1434/1433 > 1399 off-map),
+//  and [coordbase] logged zero decodes.
+//
+//  Fix: the CnCNet client writes spawnmap.ini BEFORE launching gamemd, so at
+//  init we read [MapSizeExt]CoordBase from it (absent/vanilla map -> 1000 ->
+//  no-op). For base = power of two > 1000, rewrite the decode in Phobos.dll:
+//     Y = N >> log2(base)   (mov eax,esi; shr eax,k; NOP-fill the magic)
+//     X = N - Y*base        (imul imm 1000 -> base; existing sub unchanged)
+//  Separately (any stride > 512, no CoordBase needed): the parser's inline
+//  cell-index validity check (shl ebx,9 @0x80114 + cmp 0x3FFFF @0x8011E +
+//  Items[+0x13C]) is in NEITHER kPhobosShl nor the scanner's matched set ->
+//  patch it here. All writes byte-verified (Phobos Development Build 48);
+//  a different build skips with a log line.
+static int ApplyPhobosWaypointCoordBase(int shift, DWORD total, FILE* log)
+{
+    HMODULE h = GetModuleHandleA("Phobos.dll");
+    if (!h) return 0;
+    const DWORD base = reinterpret_cast<DWORD>(h);
+    int n = 0;
+
+    // -- validity-check cell index (stride fix, independent of CoordBase) --
+    n += PatchShiftC1(base + 0x80114, (BYTE)shift);            // shl ebx,9 -> stride
+    n += PatchImm32(base + 0x8011E, 2, 0x3FFFF, total - 1);    // bound -> stride^2-1
+
+    // -- coord->cell inline GetCellIndex sites the scanner's strict window
+    //    misses (lepton sar-8 conversion sits between the shl and the bound;
+    //    found by a loose 2-part rescan, verified genuine Items[+0x13C] derefs).
+    //    On a far-map coordinate the stale 0x3FFFF bound FAILS -> Phobos gets a
+    //    NULL cell -> silent misbehavior (suspected click/action decode path of
+    //    the 2048 "orders go to the dummy cell" bug). shl 9 -> stride, bound ->
+    //    stride^2-1, byte-verified (Phobos Development Build 48).
+    static const DWORD kCoordCell[][2] = {   // {shl RVA, cmp RVA}
+        { 0x271D5, 0x271EB },
+        { 0x6EAA3, 0x6EAB8 },
+        { 0x9F307, 0x9F31D },
+    };
+    for (int i = 0; i < 3; ++i)
+    {
+        n += PatchShiftC1(base + kCoordCell[i][0], (BYTE)shift);
+        n += PatchImm32(base + kCoordCell[i][1], 2, 0x3FFFF, total - 1);
+    }
+
+    // -- per-map decode base from spawnmap.ini --
+    char ini[MAX_PATH];
+    GetModuleFileNameA(nullptr, ini, MAX_PATH);
+    char* s = strrchr(ini, '\\'); if (s) *(s + 1) = '\0';
+    strcat_s(ini, "spawnmap.ini");
+    const int cb = (int)GetPrivateProfileIntA("MapSizeExt", "CoordBase", 1000, ini);
+    int k = -1;                                    // log2(cb) if power of two
+    for (int b = 10; b <= 20; ++b) if (cb == (1 << b)) { k = b; break; }
+    if (cb <= 1000 || k < 0)
+    {
+        if (log) fprintf(log, "[phobos-wp] spawnmap CoordBase=%d -> decode stays base-1000; validity+coordcell %d/8\n", cb, n);
+        return n;
+    }
+    // Publish for the gamemd cell-target codec hooks (Hooks.cpp
+    // CellTarget_Encode*/Decode*_CoordBase) and any other CoordBase consumer:
+    // the client writes spawnmap.ini before launch, so this is per-session
+    // correct and set before any scenario parsing runs.
+    g_CoordBase = cb;
+
+    // Y = N/1000 (magic) -> Y = N >> k
+    static const BYTE expY[17] = { 0xB8,0xD3,0x4D,0x62,0x10,0xF7,0xEE,0xC1,0xFA,0x06,
+                                   0x8B,0xC2,0xC1,0xE8,0x1F,0x03,0xC2 };
+    BYTE repY[17] = { 0x8B,0xC6,0xC1,0xE8,(BYTE)k,0x90,0x90,0x90,0x90,0x90,
+                      0x90,0x90,0x90,0x90,0x90,0x90,0x90 };
+    void* pY = reinterpret_cast<void*>(base + 0x800F5);
+    if (memcmp(pY, expY, 17) == 0)
+    {
+        DWORD old = 0;
+        if (VirtualProtect(pY, 17, PAGE_EXECUTE_READWRITE, &old))
+        {
+            memcpy(pY, repY, 17);
+            VirtualProtect(pY, 17, old, &old);
+            ++n;
+        }
+    }
+    // X = N - Y*1000 -> imul imm 1000 -> cb (sub stays)
+    n += PatchImm32(base + 0x80109, 2, 0x3E8, (DWORD)cb);
+
+    // Phobos's waypoint WRITER @0x8029A: imul ecx,[esi+0x16],1000; add [esi+0x14]
+    // -> WriteInt("Waypoints", ...). NOT save-only: planning-mode clicks create
+    // waypoints through it, and the written value resurfaces as the {type 0xB, N}
+    // order target (proven: user's click at (360,365) -> N=365360 re-decoded
+    // every frame by the event codec). Every reader is CoordBase now; re-base
+    // the writer too or planning waypoints decode as garbage.
+    n += PatchImm32(base + 0x8029A, 2, 0x3E8, (DWORD)cb);
+
+    if (log) fprintf(log, "[phobos-wp] spawnmap CoordBase=%d -> Phobos waypoint decode Y=N>>%d, X=N-Y*%d (+validity+coordcell+wpwrite) : %d/11 sites\n",
+                     cb, k, cb, n);
+    return n;
+}
+
+// ============================================================
+//  Planning-mode pack-base arguments (the final base-1000 encoder, 2026-08-18).
+//
+//  The waypoint/planning module (0x633xxx-0x63Fxxx; per-frame re-resolvers
+//  0x633BF6 family caught by the DEC1 stack-scan) creates its orders through a
+//  helper that receives the CELL-PACK BASE AS AN ARGUMENT: six call setups
+//  `push 0x3E8` (0x63D7BD, 0x63FBED, 0x63FC49, 0x63FCA5, 0x63FD03, 0x63FD61).
+//  That is why every instruction-pattern scan for x1000 math failed -- the
+//  multiply lives behind a parameter. With all decoders CoordBase'd, these
+//  six immediates were the last base-1000 legs: planning clicks packed
+//  Y*1000+X (proven: click (369,363) -> N=363369 -> decoded (873,177)).
+static int ApplyPlanningBasePatches(FILE* log)
+{
+    // REVERTED 2026-08-18: the six push-1000s applied (6/6) but clicks still
+    // produced base-1000 targets -> these arguments are NOT the pack base
+    // (likely durations/ranges); leave them vanilla to avoid side effects.
+    (void)log;
+    return 0;
+}
+
+// ============================================================
+//  A* pathfinder node-pool overflow guard  (the delayed heap-corruption crash).
+//
+//  Root cause (memory mapsizeext-astar-pool-overflow; snapshot 110213): the
+//  node allocator @0x42A460 keeps pool counters AT the buffer end (pool A 16B
+//  nodes, counter@base+0x100000, 65,536 cap; pool B 12B, counter@base+0x180000,
+//  131,072 cap) with NO bounds check; a big-map search that needs >65,536 nodes
+//  writes the slot-65,536 node ONTO the counter, and the next allocation goes
+//  wild -> heap corruption.
+//
+//  We do NOT widen the buffers: the game allocator (0x7C9442) would not return
+//  a contiguous 8 MB block, so a bigger counter offset faulted at launch. The
+//  fix is the counter-CAP hooks in Hooks.cpp (AStar_PoolACap/PoolBCap) which
+//  clamp the node index just below capacity -> a pathological search degrades
+//  (reuses the top slot) instead of corrupting the heap. Nothing to patch here.
+int ApplyAStarPoolPatches(FILE* log)
+{
+    if (log) fprintf(log, "[astar]   overflow guard active via cap hooks (no widening)\n");
+    return 0;
+}
+
 int ApplyModulePatches(FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);
@@ -799,6 +1062,9 @@ int ApplyModulePatches(FILE* log)
                          M.name, base, ns, M.nshl, nc, M.ncmp, na, M.nand, nr, M.nsar);
         grand += ns + nc + na + nr;
     }
+    grand += ApplyPhobosCellIndexScan(shift, total, log);   // ore spawner + 12 other newer GetCellIndex sites
+    grand += ApplyPhobosWaypointCoordBase(shift, total, log);  // the 2048 spawn fix (per-map base from spawnmap.ini)
+    grand += ApplyPlanningBasePatches(log);                     // planning-order pack-base args (g_CoordBase set above)
     return grand;
 }
 

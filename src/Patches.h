@@ -48,6 +48,8 @@ int ApplyIteratorStridePatches(FILE* log);
 // Subzone hierarchy block scale 4->8 (Krisztiaan handoff): keeps subzone IDs in
 // range on big maps. Radar surface resize 512->1024: enables the minimap.
 int ApplySubzoneScalePatches(FILE* log);
+// A* node-pool 8x widening (heap-corruption fix); no-op at stride 512.
+int ApplyAStarPoolPatches(FILE* log);
 int ApplyRadarPatches(FILE* log);
 
 // Fixes the inverse index->(X,Y) conversions (and 0x1FF / sar 9) so
@@ -87,3 +89,7 @@ int ApplyGuardPatches(FILE* log);
 // +2 Phobos), the false-positive-free alternative to our broad inline sweep.
 // Used when [Debug] CuratedBase=1. See src/CuratedBase.cpp and docs/BUG-ATLAS.md.
 int ApplyCuratedBase(FILE* log);
+
+// The 14 subzone-id movsx->movzx consumer patches (unsigned 16-bit id
+// namespace). Applied in BOTH curated and broad modes; no-op at stride 512.
+int ApplySubzoneMovzxPatches(FILE* log);

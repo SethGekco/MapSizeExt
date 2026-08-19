@@ -97,6 +97,52 @@ static void DumpMapStateOnce()
     fprintf(f, "-- raw window 0xE0..0x158 --\n");
     for (DWORD off = 0xE0; off <= 0x158; off += 4)
         fprintf(f, "  [+0x%03X] = %11d  (0x%08X)\n", off, I(off), U(off));
+
+    // Diamond edge-band population audit (2026-08-18): user reports LEGAL cells
+    // ~5-10 deep from the map edge refuse orders with a normal cursor at stride
+    // 2048 -- consistent with NULL/garbage slots in a ring just inside the
+    // diamond (population under-fill). Sample rings at cartesian edge distance
+    // d and count null / identity-mismatched slots. All-zero = population OK
+    // (then the dead band is elsewhere); nonzero pins the hole's depth.
+    {
+        const int W = I(0xF4), H = I(0xF8);
+        DWORD items = *reinterpret_cast<DWORD*>(0x87F924);
+        if (items && W > 4 && H > 4)
+        {
+            static const int bands[] = { 0, 1, 2, 3, 5, 8, 12 };
+            fprintf(f, "\n-- edge-band population audit (d = cartesian ring distance) --\n");
+            for (int bi = 0; bi < 7; ++bi)
+            {
+                const int d = bands[bi];
+                if (2 * d >= W || 2 * d >= H) break;
+                int total = 0, nullc = 0, badid = 0;
+                for (int side = 0; side < 4; ++side)
+                {
+                    const int n = (side < 2 ? W - 2 * d : H - 2 * d);
+                    const int step = (n > 200 ? n / 200 : 1);
+                    for (int i = 0; i < n; i += step)
+                    {
+                        int X, Y;
+                        if (side == 0)      { X = d + i;     Y = d; }
+                        else if (side == 1) { X = d + i;     Y = H - 1 - d; }
+                        else if (side == 2) { X = d;         Y = d + i; }
+                        else                { X = W - 1 - d; Y = d + i; }
+                        const int rx = X + Y + 1, ry = Y - X + W;
+                        const int idx = ry * g_MapStride + rx;
+                        ++total;
+                        if (idx < 0 || idx >= g_MapTotal) { ++badid; continue; }
+                        const DWORD c = *reinterpret_cast<DWORD*>(items + idx * 4);
+                        if (!c) { ++nullc; continue; }
+                        if (c < 0x400000 || c >= 0x60000000) { ++badid; continue; }
+                        if (*reinterpret_cast<short*>(c + 0x24) != rx ||
+                            *reinterpret_cast<short*>(c + 0x26) != ry) ++badid;
+                    }
+                }
+                fprintf(f, "  band d=%2d: sampled=%4d  null=%4d  bad-identity=%4d\n",
+                        d, total, nullc, badid);
+            }
+        }
+    }
     fclose(f);
 }
 
@@ -148,6 +194,7 @@ static void DumpVisibleCellsLighting()
     fprintf(f, "Visible-cell coord range: X[%d..%d] Y[%d..%d]\n", minx, maxx, miny, maxy);
     fclose(f);
 }
+
 
 DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
 {
@@ -237,11 +284,14 @@ DEFINE_HOOK(483B32, MapClass_InlineAccess_Stride, 6)
 //  stride needs patching. (Old hook used size 6 and returned
 //  0x56575C, which was inside the trampoline.)
 // ============================================================
+static void FactoryVtableSentinel();  // defined after DeployDiagLog below
+
 DEFINE_HOOK(565757, MapClass_LeptonOp_Stride, 5)
 {
     R->EDX(R->EDX<int>() * g_MapStride + R->ESI<int>());
     DumpMapStateOnce();  // diagnostic (once) - hot during pan/render
     DumpVisibleCellsLighting();  // lighting probe (once)
+    FactoryVtableSentinel();     // crash-#5 hunt: catch the first factory corruption
     return 0x56575C;  // js 0x56577a
 }
 
@@ -347,18 +397,118 @@ DEFINE_HOOK(68BE0C, Waypoint_CoordBaseDecode, 5)
     dst[0] = static_cast<short>(N % ub);   // X = iso rx
     dst[1] = static_cast<short>(N / ub);   // Y = iso ry
 
-    static bool logged = false;
-    if (!logged && base != 1000)
+    // Log the first few decodes UNCONDITIONALLY (even base==1000): this is the
+    // direct proof of whether the reader ever sees a map's real waypoint values
+    // (e.g. N=741739 for the 700x700 map). The 2026-08-16 run showed CoordBase
+    // stuck at 1000 + zero engine waypoints at the (once-only) probe moment; the
+    // 50x950 run then PLAYED, proving the real read happens later than the probe.
+    static int decodes = 0;
+    if (++decodes <= 10)
     {
-        logged = true;
         char p[MAX_PATH];
         GetModuleFileNameA(nullptr, p, MAX_PATH);
         char* s = strrchr(p, '\\'); if (s) *(s + 1) = '\0';
         strcat_s(p, "MapSizeExt.log");
         FILE* f = nullptr; fopen_s(&f, p, "a");
-        if (f) { fprintf(f, "[coordbase] map CoordBase=%d (decoding waypoints Y*base+X)\n", base); fclose(f); }
+        if (f) { fprintf(f, "[coordbase #%d] N=%u base=%d -> X=%d Y=%d\n",
+                         decodes, N, base, (int)dst[0], (int)dst[1]); fclose(f); }
     }
     return 0x68BE35;
+}
+
+// ============================================================
+//  SPAWN DIAGNOSTIC: pinpoint where big-map MP starts go garbage (stride>512)
+//
+//  The 2048 spawn hang: the MP-start assigner (~0x6884D5) reads Scenario.Waypoints
+//  (*(0xA8B230)+0x632, array[702] of packed cells) and finds garbage (last seen =
+//  0x0087F7E8, the MapClass::Instance pointer) -> no valid start -> infinite search
+//  -> black screen. Static tracing is ambiguous: INIClass_ReadScenario DOES call
+//  the vanilla reader 0x68BDC0 at 0x6873DB (writes Waypoints from [Waypoints], our
+//  CoordBase hook decodes it), but then a loop @0x6873F4 OVERWRITES Waypoints[0..7]
+//  with Scenario+0x11C0[0..7] when flag Scenario+0x34BD is set. The 0x11C0 offset
+//  aliases across unrelated structs so its filler can't be pinned statically.
+//
+//  This read-only probe snapshots the whole chain in ONE run. Hook point 0x687410
+//  = `mov 0x887048,%edx` (6B), immediately AFTER the copy loop, so we see the final
+//  Waypoints[0..7] the assigner will read, the source table, and the copy flag.
+//  Logs once. Gated stride>512 so it is a strict no-op on vanilla-size play.
+DEFINE_HOOK(687410, Spawn_WaypointDiag, 6)
+{
+    if (g_MapStride > 512)
+    {
+        static int calls = 0;
+        if (++calls <= 24)          // log every call (capped), not once -- capture sequence
+        {
+            char* scen = *reinterpret_cast<char**>(0xA8B230);
+            char p[MAX_PATH];
+            GetModuleFileNameA(nullptr, p, MAX_PATH);
+            char* s = strrchr(p, '\\'); if (s) *(s + 1) = '\0';
+            strcat_s(p, "MapSizeExt.log");
+            FILE* f = nullptr; fopen_s(&f, p, "a");
+            if (f)
+            {
+                fprintf(f, "[spawndiag #%d] Scenario=%p CoordBase=%d copyFlag(0x34BD)=%d ini(ebx)=%p\n",
+                        calls, (void*)scen, g_CoordBase,
+                        scen ? (int)(unsigned char)scen[0x34BD] : -1, (void*)R->EBX());
+                if (scen)
+                {
+                    unsigned* wp  = reinterpret_cast<unsigned*>(scen + 0x632);
+                    unsigned* src = reinterpret_cast<unsigned*>(scen + 0x11C0);
+                    for (int i = 0; i < 8; ++i)
+                    {
+                        unsigned w = wp[i], t = src[i];
+                        // decode packed cell as low/high word (engine stores X=low,Y=high)
+                        fprintf(f, "[spawndiag]  #%d  Waypoints[0x632]=%08X (X=%d Y=%d)   Src[0x11C0]=%08X (X=%d Y=%d)\n",
+                                i, w, (short)(w & 0xFFFF), (short)(w >> 16),
+                                   t, (short)(t & 0xFFFF), (short)(t >> 16));
+                    }
+                }
+                fclose(f);
+            }
+        }
+    }
+    return 0;   // continue normally (read-only probe)
+}
+
+// Second probe: the MP-start assigner itself (fn @0x688380, hang loop scans
+// Waypoints at 0x6883B7 / 0x688455). Hook 0x68839A = `mov 0xa8b230,%edx` (6B,
+// post-prologue) so we log what the assigner ACTUALLY reads -- this fires even if
+// INIClass_ReadScenario / the 0x687410 probe is bypassed in the CnCNet flow. The
+// engine's empty-slot sentinel X is the word at 0xB05458; we flag matches.
+DEFINE_HOOK(68839A, Spawn_AssignerDiag, 6)
+{
+    if (g_MapStride > 512)
+    {
+        static int calls = 0;
+        if (++calls <= 8)           // assigner may loop forever on hang -> cap hard
+        {
+            char* scen = *reinterpret_cast<char**>(0xA8B230);
+            unsigned short sentinel = *reinterpret_cast<unsigned short*>(0xB05458);
+            char p[MAX_PATH];
+            GetModuleFileNameA(nullptr, p, MAX_PATH);
+            char* s = strrchr(p, '\\'); if (s) *(s + 1) = '\0';
+            strcat_s(p, "MapSizeExt.log");
+            FILE* f = nullptr; fopen_s(&f, p, "a");
+            if (f)
+            {
+                fprintf(f, "[assigner #%d] Scenario=%p sentinelX=%04X -- Waypoints the assigner scans:\n",
+                        calls, (void*)scen, sentinel);
+                if (scen)
+                {
+                    unsigned* wp = reinterpret_cast<unsigned*>(scen + 0x632);
+                    for (int i = 0; i < 8; ++i)
+                    {
+                        unsigned w = wp[i];
+                        fprintf(f, "[assigner]  #%d = %08X  X=%d Y=%d %s\n",
+                                i, w, (short)(w & 0xFFFF), (short)(w >> 16),
+                                (unsigned short)(w & 0xFFFF) == sentinel ? "(empty)" : "");
+                    }
+                }
+                fclose(f);
+            }
+        }
+    }
+    return 0;   // read-only probe
 }
 
 // ============================================================
@@ -409,6 +559,7 @@ DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
     R->EAX(0);                                 // replicate the stolen 'xor eax,eax'
     return 0x722E15;                           // resume the zero-fill loop
 }
+
 
 // ============================================================
 //  Radar minimap null-guard (Stride > 512).
@@ -503,7 +654,7 @@ DEFINE_HOOK(70D990, Object_PlotOnRadar_NullGuard, 6)
 static void DeployDiagLog(const char* fmt, ...)
 {
     static int lines = 0;
-    if (g_MapStride <= 512 || lines >= 500) return;
+    if (g_MapStride <= 512 || lines >= 50000) return;   // was 500: logs stopped mid-game (user-reported)
     char path[MAX_PATH];
     GetModuleFileNameA(nullptr, path, MAX_PATH);
     char* slash = strrchr(path, '\\');
@@ -517,6 +668,52 @@ static void DeployDiagLog(const char* fmt, ...)
     va_end(ap);
     fclose(f);
     ++lines;
+}
+
+// ------------------------------------------------------------------
+//  Crash-#5 hunt (snapshot 182948): a SPARSE writer corrupts a mid-game
+//  FactoryClass's embedded vtables at +0x24/+0x28/+0x2C (deltas +10/+20/+10)
+//  plus (id<<16|flags)-style dwords at 12-byte stride nearby -- zone-graph-
+//  flavored, survives all four pool/subzone fixes; likely a stale pointer
+//  into freed pathfinder scratch that the factory allocation reused.
+//  Sentinel: ~every 2s walk the static FactoryClass array (inline items
+//  @0x884B94, count @0x884CF8, capacity 89) and byte-check each factory's
+//  head + embedded vtables. On the FIRST mismatch log frame + index + a
+//  0x60-byte hexdump -> gives the corruption a timestamp to correlate with
+//  the order/path log. Read-only, capped, stride-gated.
+static void FactoryVtableSentinel()
+{
+    static DWORD lastTick = 0;
+    static int events = 0;
+    if (g_MapStride <= 512 || events >= 12) return;
+    DWORD now = GetTickCount();
+    if (now - lastTick < 2000) return;
+    lastTick = now;
+    int count = *reinterpret_cast<int*>(0x884CF8);
+    if (count <= 0 || count > 89) return;
+    for (int i = 0; i < count; ++i)
+    {
+        DWORD fac = reinterpret_cast<DWORD*>(0x884B94)[i];
+        if (fac < 0x110000 || fac > 0x7F000000) continue;   // not a heap ptr
+        const DWORD* p = reinterpret_cast<const DWORD*>(fac);
+        if (p[0] != 0x7EA8A0)   // not a FactoryClass head -> array theory wrong; note once
+        {
+            static bool warned = false;
+            if (!warned) { warned = true; DeployDiagLog("FACSENT array[%d]=%08X head=%08X != 7EA8A0 (identity?)\n", i, fac, p[0]); }
+            continue;
+        }
+        if (p[9] != 0x7EA834 || p[10] != 0x7EA80C || p[11] != 0x7EA7F4)  // +0x24/+0x28/+0x2C
+        {
+            ++events;
+            DeployDiagLog("FACSENT HIT frame=%d fac[%d]=%08X vt24=%08X vt28=%08X vt2C=%08X\n",
+                          *reinterpret_cast<int*>(0xA8ED84), i, fac, p[9], p[10], p[11]);
+            const BYTE* b = reinterpret_cast<const BYTE*>(fac);
+            for (int off = 0; off < 0x60; off += 16)
+                DeployDiagLog("  +%02X: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                              off, b[off], b[off+1], b[off+2], b[off+3], b[off+4], b[off+5], b[off+6], b[off+7],
+                              b[off+8], b[off+9], b[off+10], b[off+11], b[off+12], b[off+13], b[off+14], b[off+15]);
+        }
+    }
 }
 
 // Inside CanDeploySlashUnload, at the operator[] setup:
@@ -732,6 +929,424 @@ static DWORD CellAt(int x, int y)
 // LandType (+0xEC): 0=Clear 1=Road 2=Water 3=Rock 4=Wall 5=Tiberium 6=Beach 7=Rough 8=Cliff. -1 = null cell.
 static int LandTypeAt(int x, int y) { DWORD c = CellAt(x, y); return c ? *reinterpret_cast<int*>(c + 0xEC) : -1; }
 
+// ============================================================
+//  SENTINEL-FAIL TRAP (the human-order fold, stride 2048).
+//
+//  2026-08-17 bracket data: a corner-ordered unit's stored Destination is the
+//  OOB DUMMY CELL 0xABDC50 -- the click->order decode fails a cell lookup, the
+//  unit's destination becomes the dummy, and the dummy's scratch MapCoords
+//  (rewritten by every failed lookup game-wide) make the unit wander (all the
+//  observed behaviors: all-over-the-place / off-map north / mid-map / folds).
+//  All three cell-lookup fail paths write the REQUESTED packed coords into the
+//  dummy (0xABDC74) before returning it: op[](Cell&) @0x565712, op[](lepton)
+//  @0x565789, GetCellAt @0x5657CF. In-diamond coords cannot fail these checks
+//  at stride 2048, so every hit carries ALREADY-corrupt coords -- log request
+//  + caller return address to identify the decoder. Per-caller cap, total cap.
+static void LogSentinelFail(const char* site, DWORD packed, DWORD caller)
+{
+    static int total = 0;
+    if (total > 400) return;
+    ++total;
+    static DWORD callers[64]; static int counts[64]; static int ncal = 0;
+    int i;
+    for (i = 0; i < ncal; ++i) if (callers[i] == caller) break;
+    if (i == ncal)
+    {
+        if (ncal >= 64) return;
+        callers[ncal] = caller; counts[ncal] = 0; ++ncal;
+    }
+    if (counts[i]++ >= 6) return;
+    DeployDiagLog("OOB %s req(%d,%d) caller=0x%X\n", site,
+                  (int)(short)(packed & 0xFFFF), (int)(short)(packed >> 16), caller);
+}
+DEFINE_HOOK(565712, CellLookup_Fail_OpCell, 6)
+{
+    if (g_MapStride > 512)
+        LogSentinelFail("op[]", R->EDX(), *reinterpret_cast<DWORD*>(R->ESP() + 4));
+    return 0;
+}
+DEFINE_HOOK(565789, CellLookup_Fail_OpLepton, 6)
+{
+    if (g_MapStride > 512)
+        LogSentinelFail("lep ", R->EDX(), *reinterpret_cast<DWORD*>(R->ESP() + 4));
+    return 0;
+}
+DEFINE_HOOK(5657CF, CellLookup_Fail_GetCellAt, 6)
+{
+    if (g_MapStride > 512)
+        LogSentinelFail("gca ", R->EDX(), *reinterpret_cast<DWORD*>(R->ESP()));
+    return 0;
+}
+
+// ============================================================
+//  A* NODE-POOL OVERFLOW CAP (heap-corruption crash fix, stride>512).
+//
+//  Allocator @0x42A460: pool A count read `mov edx,[eax+0x100000]` @0x42A466
+//  (6B) -> node = base + edx*16, then inc+store. Pool B count `mov
+//  edx,[eax+0x180000]` @0x42A482 (6B) -> entry = base + edx*12. We replicate
+//  the load and CLAMP the count just below capacity so the node/counter writes
+//  never reach the buffer end (A cap 0xFFFE*16=0xFFFE0 < 0x100000; B cap
+//  0x1FFFE*12=0x17FFE8 < 0x180000). No allocation change -> launch-safe;
+//  overflow just reuses the top slot (path may fail) instead of corrupting heap.
+DEFINE_HOOK(42A466, AStar_PoolACap, 6)
+{
+    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x100000);
+    if (g_MapStride > 512 && cnt > 0xFFFE) cnt = 0xFFFE;
+    R->EDX(cnt);
+    return 0x42A46C;                      // resume after the replaced mov
+}
+DEFINE_HOOK(42A482, AStar_PoolBCap, 6)
+{
+    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x180000);
+    if (g_MapStride > 512 && cnt > 0x1FFFE) cnt = 0x1FFFE;
+    R->EDX(cnt);
+    return 0x42A488;                      // resume after the replaced mov
+}
+
+// ------------------------------------------------------------------
+//  THIRD (hierarchical) A* node pool cap. Crash 20260818-175901: the
+//  hierarchical search fn (~0x42C2B0) allocates 16-byte nodes from the
+//  [AStar+0x64] pool (ctor malloc 0x27100 = exactly 10,000 nodes) using a
+//  stack counter [esp+0x2C] (init 1 @0x42C482) and byte offset [esp+0x30]
+//  (recomputed = count*16 each outer iteration @0x42C521), incremented
+//  @0x42C712-0x42C71D with NO bound check -- only the paired heap pushes
+//  ([AStar+0x68], cap 0x2710) are guarded, and a rejected push does not
+//  stop the node write. The subzone movzx fix let big-map hierarchical
+//  searches run to completion (~11.8K nodes observed), overrunning the pool
+//  by ~30 KB into the radar blip-index hash table that the wine heap places
+//  12 bytes after it (fatal @0x6567B3 walking a trampled bucket vector).
+//  Fix = same shape as the other two pools: clamp the counter at the single
+//  increment site so overflow reuses the top slot (degraded search, no OOB).
+//  Stolen bytes = the two 4-byte movs; we also perform the skipped inc/add
+//  (with the cap) and resume at the store-back @0x42C71E. NO-OP at 512.
+DEFINE_HOOK(42C712, AStar_HierNodePoolCap, 8)
+{
+    DWORD cnt = *reinterpret_cast<DWORD*>(R->ESP() + 0x2C);
+    DWORD off = *reinterpret_cast<DWORD*>(R->ESP() + 0x30);
+    if (g_MapStride > 512 && cnt >= 9999)
+    {
+        cnt = 9999;                       // reuse top slot (pool holds 10,000)
+        off = 9999 * 16;
+    }
+    else
+    {
+        ++cnt;                            // replicate inc ecx / add eax,0x10
+        off += 0x10;
+    }
+    R->ECX(cnt);
+    R->EAX(off);
+    return 0x42C71E;                      // store-back mov [esp+0x2C]/[esp+0x30]
+}
+
+// ============================================================
+//  CELL-TARGET CODEC CoordBase FIX (root cause of the 2048 order bug).
+//
+//  The DUMMYDEST trap named the chain: EventClass::Execute (0x4C7482) ->
+//  cell-target DECODE 0x6E6ED6 -> InfantryClass::SetDestination -> dummy.
+//  Human orders travel through the event queue as TargetClass {N @+0, type
+//  @+4}; for cells type=0xB and N = Y*1000 + X -- RA2's universal base-1000
+//  external cell number. At stride 2048 any clicked cell with X>=1000 encodes
+//  ambiguously and the decode yields off-diamond coords -> GetCellAt returns
+//  the dummy -> the unit chases the dummy's drifting scratch coords (every
+//  observed symptom). AI orders bypass the event queue -> never affected.
+//
+//  The complete codec (all in the 0x6E6xxx-0x6E7Cxx cluster):
+//    ENCODE1 0x6E6B20 (from CellStruct): tag @0x6E6B46; Y*125 via lea-chain
+//      @0x6E6B51-57; N = X + 8*(125Y) @0x6E6B5A; store @0x6E6B5D.
+//    ENCODE2 0x6E6B70 (from CoordStruct/leptons): tag @0x6E6B75; Y*125
+//      @0x6E6B89-8F into EDI; N = X + EDI*8 @0x6E6BA0.
+//    DECODE1 0x6E6ED0 (type==0xB): X=N%1000 (idiv @0x6E6EDE), Y=N/1000
+//      (magic), CellStruct -> GetCellAt @0x6E6F05.
+//    DECODE2 0x6E7C20: identical twin (MegaMission destination field).
+//  Both encoders share the "*8 tail", so substituting the 125 with
+//  (CoordBase>>3) re-bases them exactly (1000>>3==125; CoordBase is pow2).
+//  Decoders replace the div pair with N%base / N/base. All four hooks are
+//  strict no-ops (return 0 -> original base-1000 code) unless the map carries
+//  CoordBase>1000 (published at init from spawnmap.ini), so vanilla maps stay
+//  byte-identical in behavior. Deferred same-class siblings (not in the order
+//  path): 0x4AD232/0x4ADC17 (Display text/waypoint parse), 0x71CAEF (forest
+//  fire jump) -- revisit if their features misbehave on CoordBase maps.
+// CLICK-vs-ORDER TRACER (2026-08-18, user-requested): every encode logs
+// cell -> number, every decode logs number -> cell. Clicking around with the
+// waypoint tool then yields a paired trace; a decode with no matching encode
+// (or coords that differ) fingers a FOREIGN codec (Phobos/Antares planning
+// code) and its arithmetic. Shared cap keeps the log bounded.
+static bool TraceBudget()
+{
+    static int n = 0;
+    return ++n <= 600;
+}
+// THE runtime click-order encoder -- TargetClass::From(AbstractClass*), cell
+// branch @0x6E6AC0: WhatAmI()==0xB -> read MapCoords -> lea x5, POP EDI,
+// lea x5, lea x5, x8 -> N = X + 1000*Y. The interleaved one-byte `pop edi`
+// @0x6E6ADD broke every consecutive-pattern scan across five hunts; found via
+// its return address (0x6E6AFC, non-cell branch) captured in the static ring
+// dump. Hook after the x125 chain: ecx = 125*Y (exact), edx = X; recompute
+// N = X + Y*CoordBase, store to [esi] (type 0xB already stored @0x6E6AC8),
+// resume at the return sequence.
+DEFINE_HOOK(6E6AE4, CellTarget_Encode0_CoordBase, 5)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const DWORD y = R->ECX() / 125;                       // lea chain: ecx = 125*Y
+    const DWORD N = R->EDX() + y * (DWORD)g_CoordBase;    // edx = X
+    *reinterpret_cast<DWORD*>(R->ESI()) = N;
+    if (TraceBudget()) DeployDiagLog("ENC0 (%u,%u) -> %u\n", R->EDX(), y, N);
+    return 0x6E6AE9;                                      // mov eax,esi; pop esi; ret 4
+}
+DEFINE_HOOK(6E6B51, CellTarget_Encode1_CoordBase, 6)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const DWORD y = R->ECX(), x = R->EDX();
+    if (TraceBudget())
+        DeployDiagLog("ENC1 (%d,%d) -> %u\n", (int)x, (int)y, x + y * (DWORD)g_CoordBase);
+    R->ECX(y * (DWORD)(g_CoordBase >> 3));          // ecx=Y -> Y*(base/8)
+    return 0x6E6B5A;                                // lea ecx,[edx+ecx*8]; store
+}
+DEFINE_HOOK(6E6B89, CellTarget_Encode2_CoordBase, 6)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const int y = (int)R->EAX();
+    if (TraceBudget())
+    {
+        const int xlep = *reinterpret_cast<int*>(R->ESI());     // coord.X leptons
+        DeployDiagLog("ENC2 (%d,%d)\n", xlep >> 8, y);
+    }
+    R->EDI((DWORD)y * (DWORD)(g_CoordBase >> 3));   // eax=Y -> edi=Y*(base/8)
+    return 0x6E6B92;                                // X conv; lea eax,[eax+edi*8]
+}
+// Vanilla parity (user-verified behavior): an off-map order travels to the
+// NEAREST map cell -- vanilla's click path clamps. Our decode is faithful, so
+// off-diamond coords previously fell through to the dummy (-> no-op). Clamp
+// them into the map diamond here instead: convert iso (rx,ry) -> cartesian,
+// clamp to [0,W-1]x[0,H-1], convert back. Exact in-diamond coords (even
+// cartesian doubles in range) pass through untouched.
+static void ClampCellToMap(int& rx, int& ry)
+{
+    // The iso diamond is DENSE: valid cells exist at BOTH parities of rx+ry
+    // (half-offset rows; (2W-1)*H cells total). From the map codec: dy = rx+ry
+    // -W-1 in [0, 2H-1], dx = rx-ry+W-1 in [0, 2W-2], ANY integer pair in those
+    // ranges is a real cell. (An earlier revision wrongly required even parity
+    // and shifted half of all in-map clicks by one cell.)
+    const int W = *reinterpret_cast<int*>(0x87F8DC);   // MapRect.W / .H
+    const int H = *reinterpret_cast<int*>(0x87F8E0);
+    if (W <= 0 || H <= 0) return;
+    int dx = rx - ry + W - 1;
+    int dy = rx + ry - W - 1;
+    if (dx >= 0 && dx <= 2 * W - 2 && dy >= 0 && dy <= 2 * H - 1)
+        return;                                        // already a valid cell
+    if (dx < 0) dx = 0; else if (dx > 2 * W - 2) dx = 2 * W - 2;
+    if (dy < 0) dy = 0; else if (dy > 2 * H - 1) dy = 2 * H - 1;
+    if ((dx + dy) & 1) { if (dy > 0) --dy; else ++dy; }   // rx must be integral
+    rx = ((dx + dy) >> 1) + 1;
+    ry = ((dy - dx) >> 1) + W;
+}
+DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
+    int rx = (int)(N % b), ry = (int)(N / b);
+    ClampCellToMap(rx, ry);
+    if (TraceBudget())
+    {
+        // ESI = &record (the {N,type} target). Dump its neighborhood once per
+        // unique N (cap): the surrounding bytes identify the OWNING STRUCT
+        // (event type/frame/unit) -> which constructor built it -> the encoder.
+        static unsigned seen[12]; static int nseen = 0;
+        bool fresh = true;
+        for (int i = 0; i < nseen; ++i) if (seen[i] == N) { fresh = false; break; }
+        if (fresh && nseen < 12)
+        {
+            seen[nseen++] = N;
+            const BYTE* rec = reinterpret_cast<const BYTE*>(R->ESI());
+            char hexs[3 * 0x38 + 4]; int p = 0;
+            for (int i = -0x18; i < 0x20; ++i)
+                p += sprintf_s(hexs + p, sizeof(hexs) - p, "%02X ", rec[i]);
+            DeployDiagLog("RECDUMP N=%u rec=%X [-18..+20]: %s\n", N, (DWORD)rec, hexs);
+            // First hit: dump the WHOLE static ring region 0xA83E00-0xA84600
+            // (header + pointer array + packed records) to map its layout and
+            // ownership globals -- the ring WRITER is the base-1000 encoder.
+            if (nseen == 1)
+            {
+                for (DWORD row = 0xA83E00; row < 0xA84600; row += 0x20)
+                {
+                    char rh[3 * 0x20 + 4]; int rp = 0;
+                    for (int i = 0; i < 0x20; ++i)
+                        rp += sprintf_s(rh + rp, sizeof(rh) - rp, "%02X ",
+                                        *reinterpret_cast<BYTE*>(row + i));
+                    DeployDiagLog("RING %06X: %s\n", row, rh);
+                }
+            }
+        }
+        DeployDiagLog("DEC1 %u -> (%d,%d)\n", N, rx, ry);
+    }
+    *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E6EE5)
+    R->EDX((DWORD)ry);                                          // Y; tail: eax=edx,shr 31(=0),add
+    return 0x6E6EEF;
+}
+DEFINE_HOOK(6E7C2C, CellTarget_Decode2_CoordBase, 5)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
+    int rx = (int)(N % b), ry = (int)(N / b);
+    ClampCellToMap(rx, ry);
+    if (TraceBudget())
+    {
+        // caller stack-scan: who resolves this record (leads to who STORED it)
+        char chain[128]; chain[0]='\0'; int p=0, f=0;
+        for (int off = 0; off <= 0x60 && f < 5; off += 4)
+        {
+            DWORD v = *reinterpret_cast<DWORD*>(R->ESP() + off);
+            if ((v >= 0x401000 && v < 0x7E0000) || (v >= 0x70000000 && v < 0x80000000))
+            { p += sprintf_s(chain+p, sizeof(chain)-p, " %X", v); ++f; }
+        }
+        DeployDiagLog("DEC2 %u -> (%d,%d) stk:%s\n", N, rx, ry, chain);
+    }
+    *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E7C39)
+    R->EDX((DWORD)ry);
+    return 0x6E7C43;
+}
+
+// ============================================================
+//  DISPLAYCLASS CELL-NUMBER DECODERS (the waypoint/planning feature, 2048).
+//
+//  The recon catalogued SIX base-1000 idiv cell decoders. The event codec pair
+//  (0x6E6ED0/0x6E7C20) is patched above; the waypoint READER 0x68BE0C is owned
+//  by the Phobos fix. These two DisplayClass decoders were deferred as "text
+//  parse" -- WRONG: 0x4ADC17 is a loop decoding (index, packed-cell) pairs into
+//  Scenario waypoint slots via the setter @0x68BF50 = the waypoint/planning
+//  path decode, and 0x4AD232 is its sibling (same dual-format decode, gated on
+//  the scenario-format flag @0xA8ED7C). Left at base-1000 they decode our
+//  base-2048 numbers as Y ~= 2*Y -> planned paths point past the SE corner /
+//  opposite directions (user-observed via the waypoint feature 2026-08-18).
+//  Same hook shape as the codec decoders; the div/magic tails add +0 for Y>=0.
+//  (Sixth decoder 0x71CAEF, forest-fire/random: an `add esp,4` sits inside the
+//  hook window and R->ESP writes don't survive Syringe's popad -- deferred, not
+//  order-related.)
+DEFINE_HOOK(4AD232, CellNum_Decode_Display_CoordBase, 5)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
+    if (TraceBudget()) DeployDiagLog("DSP  %u -> (%u,%u)\n", N, N % b, N / b);
+    *reinterpret_cast<short*>(R->ESP() + 0x60) = (short)(N % b);   // X (orig @0x4AD23F)
+    R->EDX(N / b);                                                 // Y
+    return 0x4AD249;
+}
+DEFINE_HOOK(4ADC17, CellNum_Decode_WaypointList_CoordBase, 5)
+{
+    if (g_CoordBase <= 1000) return 0;
+    const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
+    R->ESI(R->ESI() + 4);                                          // replicate skipped add esi,4
+    if (TraceBudget()) DeployDiagLog("WPL  %u -> (%u,%u) idx=%d\n", N, N % b, N / b, (int)R->EBX());
+    *reinterpret_cast<short*>(R->ESP() + 0x18) = (short)(N % b);   // X (orig @0x4ADC26)
+    R->EDX(N / b);                                                 // Y
+    return 0x4ADC30;
+}
+
+// ============================================================
+//  EVENT-QUEUE ADD TRACE (find the foreign base-1000 order encoder).
+//
+//  2026-08-18 tracer session: ZERO ENC events but a DEC1 of N=365360 =
+//  (360,365) base-1000 (user's construction-yard area) -> some order creator
+//  encodes cell targets base-1000 WITHOUT going through the two known
+//  encoders (vtable-dispatched; no direct callers; all DLLs scanned clean).
+//  0x55BAA0 = the order-queue Add (this=OutList 0x87F778, arg1=EventClass*).
+//  Log every queued event raw (first 0x20 bytes) + creator return address;
+//  the base-1000 dword's position + caller identifies the encoder directly.
+DEFINE_HOOK(55BAA0, EventQueue_Add_Trace, 5)
+{
+    if (g_MapStride > 512)
+    {
+        static int n = 0;
+        const DWORD esp = R->ESP();
+        const BYTE* ev = *reinterpret_cast<const BYTE**>(esp + 4);
+        if (ev && n < 60)
+        {
+            // Filter: only events carrying a plausible packed cell number
+            // (base-1000 or base-2048 of an in-map cell: ~200,001..2,867,199)
+            // -- skips the per-frame sync spam that ate the earlier capture.
+            bool hasCell = false; int cellOff = -1;
+            for (int off = 0; off + 4 <= 0x6F; ++off)
+            {
+                DWORD v = *reinterpret_cast<const DWORD*>(ev + off);
+                if (v >= 200001 && v <= 2867199 && ev[off + 4] == 0x0B)
+                { hasCell = true; cellOff = off; break; }
+            }
+            if (hasCell)
+            {
+                ++n;
+                char hexs[3 * 0x70 + 4]; int p = 0;
+                for (int i = 0; i < 0x6F; ++i)
+                    p += sprintf_s(hexs + p, sizeof(hexs) - p, "%02X ", ev[i]);
+                char chain[160]; chain[0] = '\0'; int cp = 0, f = 0;
+                for (int off = 0; off <= 0x100 && f < 8; off += 4)
+                {
+                    DWORD v = *reinterpret_cast<DWORD*>(esp + off);
+                    if (v >= 0x401000 && v < 0x7E0000)
+                    { cp += sprintf_s(chain + cp, sizeof(chain) - cp, " %X", v); ++f; }
+                }
+                DeployDiagLog("EVQC N@+0x%X stk:%s\n  %s\n", cellOff, chain, hexs);
+            }
+        }
+    }
+    return 0;
+}
+
+// ============================================================
+//  DUMMY-DESTINATION WRITE TRAP (the human-order decode bug, stride 2048).
+//
+//  The 3-site Phobos coord-cell fix did NOT cure it: clicked units still get
+//  Destination = the OOB dummy 0xABDC50, and neither the sentinel-fail traps
+//  nor the loose Phobos rescan see the failing decode. So trap the one step
+//  the bug cannot avoid: the store into FootClass+0x5A4. All 13 writer
+//  instructions (6-byte movs) are hooked; we log ONLY when the stored value is
+//  the dummy, with a raw stack scan for return-address candidates (gamemd
+//  .text 0x401000-0x7E0000 and DLL range 0x70000000+) -- the caller chain
+//  names the decode function without needing any frame layout.
+static void LogDummyDestWrite(DWORD site, DWORD value, DWORD obj, DWORD esp)
+{
+    if (value != 0xABDC50) return;
+    static int total = 0;
+    if (++total > 40) return;
+    char chain[256]; chain[0] = '\0'; int pos = 0, found = 0;
+    for (int off = 0; off <= 0x80 && found < 7; off += 4)
+    {
+        DWORD v = *reinterpret_cast<DWORD*>(esp + off);
+        if ((v >= 0x401000 && v < 0x7E0000) || (v >= 0x70000000 && v < 0x80000000))
+        {
+            pos += sprintf_s(chain + pos, sizeof(chain) - pos, " %X", v);
+            ++found;
+        }
+    }
+    DeployDiagLog("DUMMYDEST @%X foot=%X stack:%s\n", site, obj, chain);
+}
+// LOG-ONLY. An earlier revision substituted NULL for the dummy here -- WRONG:
+// the engine uses the dummy cell as a legitimate flow-control marker all over
+// (10+ `cmp 0xABDC50` sites: infantry scatter 0x51FE41, cell-region code
+// 0x56Bxxx, CellClass 0x47D2B8 ...), and nulling it corrupted normal unit
+// behavior map-wide (user-observed 2026-08-18). The decode-side clamp now
+// prevents clicks from ever resolving to the dummy, so these hooks are pure
+// diagnostics again: original store always runs (return 0).
+#define DEST_WRITE_HOOK(addr, objreg, valreg)                                  \
+DEFINE_HOOK(addr, DestWrite_##addr, 6)                                         \
+{                                                                              \
+    if (g_MapStride > 512)                                                     \
+        LogDummyDestWrite(0x##addr, R->valreg(), R->objreg(), R->ESP());       \
+    return 0;                                                                  \
+}
+DEST_WRITE_HOOK(4D32C7, ESI, EBX)
+DEST_WRITE_HOOK(4D5A01, EBX, EDI)
+DEST_WRITE_HOOK(4D9510, EBP, ESI)
+DEST_WRITE_HOOK(4D96BC, EBP, ESI)
+DEST_WRITE_HOOK(4D9AC3, ESI, EBP)
+DEST_WRITE_HOOK(4DF0D8, ECX, EAX)
+DEST_WRITE_HOOK(54B44B, ECX, EAX)
+DEST_WRITE_HOOK(665DD3, ESI, EBX)
+DEST_WRITE_HOOK(66ECC1, ESI, EAX)
+DEST_WRITE_HOOK(67890E, ESI, EAX)
+DEST_WRITE_HOOK(710F93, ESI, EBP)
+DEST_WRITE_HOOK(7138D7, EBP, EAX)
+DEST_WRITE_HOOK(73A4E9, EBP, EAX)
+
 DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 {
     if (g_MapStride > 512)
@@ -746,16 +1361,28 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
         // "Walk on water" => a unit standing on visual water shows LT != 2 (LandType
         // mis-assigned) OR LT==2 but pathing proceeds anyway (zone/pathfinder bug).
         // Stuck-on-ramp => same (sx,sy) repeats with a higher-Level neighbour.
-        DWORD c = CellAt(sx, sy);
-        int L   = c ? (int)*reinterpret_cast<signed char*>(c + 0x11B) : -99;
-        int LT  = c ? *reinterpret_cast<int*>(c + 0xEC) : -99;
-        int sl  = c ? (int)*reinterpret_cast<unsigned char*>(c + 0x11C) : -99;
-        int iso = c ? *reinterpret_cast<int*>(c + 0x38) : -99;
-        DeployDiagLog("PATH 0x%X start(%d,%d) L=%d LT=%d slope=%d iso=%d  nbrLT[%d %d %d %d %d %d %d %d]\n",
-                      R->ECX(), sx, sy, L, LT, sl, iso,
-                      LandTypeAt(sx-1,sy-1), LandTypeAt(sx,sy-1), LandTypeAt(sx+1,sy-1),
-                      LandTypeAt(sx-1,sy),                        LandTypeAt(sx+1,sy),
-                      LandTypeAt(sx-1,sy+1), LandTypeAt(sx,sy+1), LandTypeAt(sx+1,sy+1));
+        // CORRECTED arg layout (verified in disasm 0x4D392A-0x4D39CC): arg1
+        // @[esp+4] is the packed TARGET CellStruct (converted *256+128 to
+        // leptons and range-checked); arg2 @[esp+8] is a pointer. So (sx,sy)
+        // here = the TARGET the pathfinder is asked to reach. The 2026-08-17
+        // corner-order data (this very line, mislabeled "start") showed the
+        // target arrives PRE-FOLDED: each axis truncated to 10 bits (rx/ry
+        // -1024 when >=1024) -- invisible at strides 512/1024, folds at 2048.
+        // Bracket probe: ALSO log the unit's stored Destination object
+        // (FootClass+0x5A4, set by SetDestination at order execution). If the
+        // stored destination is folded too -> fold is upstream (click/event
+        // pipeline); if it is correct while the arg is folded -> the fold is in
+        // the mission/locomotor target->cell conversion.
+        int dx = -1, dy = -1; DWORD dvt = 0;
+        DWORD dest = *reinterpret_cast<DWORD*>(R->ECX() + 0x5A4);
+        if (dest > 0x10000 && dest < 0x60000000)
+        {
+            dvt = *reinterpret_cast<DWORD*>(dest);
+            dx  = *reinterpret_cast<short*>(dest + 0x24);   // CellClass MapCoords
+            dy  = *reinterpret_cast<short*>(dest + 0x26);
+        }
+        DeployDiagLog("PATH 0x%X TGT(%d,%d) dest=%08X vt=%08X destcell(%d,%d)\n",
+                      R->ECX(), sx, sy, dest, dvt, dx, dy);
     }
     R->EAX(0x1F9C);          // replicate mov eax,0x1f9c
     return 0x4D3925;
@@ -778,10 +1405,12 @@ DEFINE_HOOK(58215B, Subzone_SaturateID, 5)   // mov cx,[esp+0x10]
     if (g_MapStride > 512)
     {
         DWORD id = *reinterpret_cast<DWORD*>(R->ESP() + 0x10);
-        // Curated mode applies his 14 movsx->movzx consumers, so the full unsigned
-        // range is safe: cap at 0xFFFE (reserve 0xFFFF). Broad mode keeps signed
-        // consumers -> cap at 0x7FFF to stay positive.
-        DWORD cap = g_CuratedBase ? 0xFFFEu : 0x7FFFu;
+        // BOTH modes now apply the 14 movsx->movzx consumers
+        // (ApplySubzoneMovzxPatches), so the full unsigned 16-bit range is
+        // safe: cap at 0xFFFE (reserve 0xFFFF = out-of-domain sentinel).
+        // Crash-dump proof this matters (2026-08-18): 700x700 @ 2048 stores
+        // 60,638 ids -- far past 0x7FFF but comfortably under this cap.
+        DWORD cap = 0xFFFEu;
         if (id > cap) id = cap;
         R->ECX((R->ECX() & 0xFFFF0000u) | (id & 0xFFFF));  // replicate mov cx with the cap
         return 0x582160;                                   // continue past the mov
