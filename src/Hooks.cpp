@@ -961,15 +961,19 @@ DEFINE_HOOK(5657CF, CellLookup_Fail_GetCellAt, 6)
 //  overflow just reuses the top slot (path may fail) instead of corrupting heap.
 DEFINE_HOOK(42A466, AStar_PoolACap, 6)
 {
-    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x100000);
-    if (g_MapStride > 512 && cnt > 0xFFFE) cnt = 0xFFFE;
+    // Widened pools (VirtualAlloc + ApplyAStarPoolPatches): counter now at
+    // +0x400000, capacity 262,144 nodes. Cap stays as a last-resort guard.
+    if (g_MapStride <= 512) return 0;   // vanilla path untouched
+    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x400000);
+    if (cnt > 0x3FFFE) cnt = 0x3FFFE;
     R->EDX(cnt);
     return 0x42A46C;                      // resume after the replaced mov
 }
 DEFINE_HOOK(42A482, AStar_PoolBCap, 6)
 {
-    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x180000);
-    if (g_MapStride > 512 && cnt > 0x1FFFE) cnt = 0x1FFFE;
+    if (g_MapStride <= 512) return 0;   // vanilla path untouched
+    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x600000);
+    if (cnt > 0x7FFFE) cnt = 0x7FFFE;
     R->EDX(cnt);
     return 0x42A488;                      // resume after the replaced mov
 }
@@ -986,11 +990,78 @@ DEFINE_HOOK(42A482, AStar_PoolBCap, 6)
 //  under-attack announcements and duplicate-suppression logic -- we lose only
 //  the cosmetic pulse. The bare `ret 4` @0x65FB47 unwinds the stack cleanly
 //  (never manipulate R->ESP -- the popad footgun). NO-OP at stride 512.
+//  v2 (the v1 always-return-TRUE variant UNCAPPED the EVA announcements:
+//  the duplicate-suppression lives INSIDE AddEvent -- it returns FALSE when a
+//  live event of the same type is within RadarEventSuppressionDistances of
+//  the new one, and with no events ever created nothing was ever "near").
+//  Now the hook REPLICATES that logic against its own ring of virtual events,
+//  reading the engine's real per-type config (suppression distance int @
+//  0x7F0998+type*16, enable flag byte @0x7F09A4+type*16). AL=0 -> caller
+//  skips the EVA exactly like vanilla; AL=1 -> announce. ~30s validity
+//  approximates the visibility duration. Pulses still never drawn.
 DEFINE_HOOK(65FA70, RadarEvent_Suppress_BigStride, 6)
 {
     if (g_MapStride <= 512) return 0;   // vanilla: run the original AddEvent
+    struct VirtEvent { int type; int x; int y; DWORD frame; };
+    static VirtEvent ring[16];
+    static int ringN = 0;
+    const int  type = R->ECX<int>() & 0xF;
+    const DWORD esp = R->ESP();
+    const int  x = *reinterpret_cast<short*>(esp + 4);   // packed cell arg
+    const int  y = *reinterpret_cast<short*>(esp + 6);
+    const DWORD now = *reinterpret_cast<DWORD*>(0xA8ED84);
+    const int  supp = *reinterpret_cast<int*>(0x7F0998 + (type << 4));
+    const bool on   = *reinterpret_cast<BYTE*>(0x7F09A4 + (type << 4)) != 0;
+    if (on)
+    {
+        for (int i = 0; i < 16; ++i)
+        {
+            const VirtEvent& v = ring[i];
+            if (v.frame == 0 || v.type != type) continue;
+            if (now - v.frame > 450) continue;            // ~30 s at game speed
+            const int dx = x - v.x, dy = y - v.y;
+            if (dx * dx + dy * dy < supp * supp)
+            {
+                R->EAX(0);
+                return 0x65FB52;                          // bare ret 4 (suppressed)
+            }
+        }
+    }
+    ring[ringN] = { type, x, y, now ? now : 1 };
+    ringN = (ringN + 1) & 15;
     R->EAX(1);
-    return 0x65FB47;                    // bare ret 4
+    return 0x65FB47;                                      // bare ret 4 (announced)
+}
+
+// ------------------------------------------------------------------
+//  A* pool VirtualAlloc widening support: the ctor's three pool mallocs are
+//  redirected to VirtualAlloc'd buffers sized to match the widened counter
+//  offsets that ApplyAStarPoolPatches writes (the 2026-08-18 widening attempt
+//  failed ONLY because the game CRT allocator cannot serve multi-MB blocks;
+//  VirtualAlloc can). Each hook sits ON the `call malloc`, sets EAX to the
+//  new zero-filled buffer and resumes at the `add esp,4` that follows, so the
+//  pushed size arg is popped normally. Paired with the byte patches; both are
+//  stride-gated so 512 stays fully vanilla.
+DEFINE_HOOK(42A7E8, AStar_PoolA_VAlloc, 5)     // pool A: 65,536 -> 262,144 nodes
+{
+    if (g_MapStride <= 512) return 0;
+    R->EAX(reinterpret_cast<DWORD>(
+        VirtualAlloc(nullptr, 0x400000 + 4, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)));
+    return 0x42A7ED;
+}
+DEFINE_HOOK(42A81C, AStar_PoolB_VAlloc, 5)     // pool B: 131,072 -> 524,288 nodes
+{
+    if (g_MapStride <= 512) return 0;
+    R->EAX(reinterpret_cast<DWORD>(
+        VirtualAlloc(nullptr, 0x600000 + 4, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)));
+    return 0x42A821;
+}
+DEFINE_HOOK(42A8E5, AStar_HierPool_VAlloc, 5)  // hier pool: 10,000 -> 80,000 nodes
+{
+    if (g_MapStride <= 512) return 0;
+    R->EAX(reinterpret_cast<DWORD>(
+        VirtualAlloc(nullptr, 0x138800, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)));
+    return 0x42A8EA;
 }
 
 // ------------------------------------------------------------------
@@ -1013,10 +1084,10 @@ DEFINE_HOOK(42C712, AStar_HierNodePoolCap, 8)
 {
     DWORD cnt = *reinterpret_cast<DWORD*>(R->ESP() + 0x2C);
     DWORD off = *reinterpret_cast<DWORD*>(R->ESP() + 0x30);
-    if (g_MapStride > 512 && cnt >= 9999)
+    if (g_MapStride > 512 && cnt >= 79999)
     {
-        cnt = 9999;                       // reuse top slot (pool holds 10,000)
-        off = 9999 * 16;
+        cnt = 79999;                      // reuse top slot (widened pool holds 80,000)
+        off = 79999 * 16;
     }
     else
     {

@@ -1037,10 +1037,46 @@ static int ApplyPlanningBasePatches(FILE* log)
 //  fix is the counter-CAP hooks in Hooks.cpp (AStar_PoolACap/PoolBCap) which
 //  clamp the node index just below capacity -> a pathological search degrades
 //  (reuses the top slot) instead of corrupting the heap. Nothing to patch here.
+//  v2 (2026-08-19): REAL widening via VirtualAlloc. The 2026-08-18 attempt
+//  failed only because the game CRT allocator cannot serve multi-MB blocks;
+//  the three ctor mallocs are now redirected to VirtualAlloc by hooks
+//  (AStar_Pool{A,B}_VAlloc / AStar_HierPool_VAlloc in Hooks.cpp), and this
+//  function widens everything that encodes the old geometry:
+//    pool A 65,536->262,144 nodes (counter offset 0x100000->0x400000),
+//    pool B 131,072->524,288    (0x180000->0x600000),
+//    open-list heap slots 0x40004->0x100004 bytes / cap 0x10000->0x40000,
+//    hier heap slots 0x9C44->0x4E204 / cap 0x2710->0x13880.
+//  The cap hooks remain as last-resort guards at the new ceilings. Profiling
+//  motive: cap-hits made big searches fail -> per-frame re-path storms
+//  (stutter) + zigzag detours. NO-OP at stride 512 (hooks return 0 there).
 int ApplyAStarPoolPatches(FILE* log)
 {
-    if (log) fprintf(log, "[astar]   overflow guard active via cap hooks (no widening)\n");
-    return 0;
+    if (g_MapStride <= 512)
+    {
+        if (log) fprintf(log, "[astar]   pools stay vanilla (stride %d)\n", g_MapStride);
+        return 0;
+    }
+    int n = 0;
+    // pool A counter offset imm32s (0x100000 -> 0x400000)
+    n += PatchImm32(0x42A47B, 0x100000, 0x400000, nullptr, "astar");
+    n += PatchImm32(0x42A5C5, 0x100000, 0x400000, nullptr, "astar");
+    n += PatchImm32(0x42A80C, 0x100000, 0x400000, nullptr, "astar");
+    n += PatchImm32(0x42A842, 0x100000, 0x400000, nullptr, "astar");
+    // pool A ctor init-loop node count (0x10000 -> 0x40000)
+    n += PatchImm32(0x42A7F8, 0x10000, 0x40000, nullptr, "astar");
+    // pool B counter offset imm32s (0x180000 -> 0x600000)
+    n += PatchImm32(0x42A48E, 0x180000, 0x600000, nullptr, "astar");
+    n += PatchImm32(0x42A5BB, 0x180000, 0x600000, nullptr, "astar");
+    n += PatchImm32(0x42A82A, 0x180000, 0x600000, nullptr, "astar");
+    n += PatchImm32(0x42A837, 0x180000, 0x600000, nullptr, "astar");
+    // open-list heap: slots buffer bytes + capacity (game malloc handles 1 MB)
+    n += PatchImm32(0x42A750, 0x40004, 0x100004, nullptr, "astar");
+    n += PatchImm32(0x42A763, 0x10000, 0x40000, nullptr, "astar");
+    // hier heap: slots buffer bytes + capacity
+    n += PatchImm32(0x42A7A2, 0x9C44, 0x4E204, nullptr, "astar");
+    n += PatchImm32(0x42A7B5, 0x2710, 0x13880, nullptr, "astar");
+    if (log) fprintf(log, "[astar]   pools widened 4x via VirtualAlloc (A 256K, B 512K, hier 80K nodes) : %d/13 sites\n", n);
+    return n;
 }
 
 // The three hottest cell-access sites, formerly Phase-1 TRAMPOLINE hooks
