@@ -975,6 +975,25 @@ DEFINE_HOOK(42A482, AStar_PoolBCap, 6)
 }
 
 // ------------------------------------------------------------------
+//  RADAR EVENT SUPPRESSION at big strides (the "snail trail" workaround).
+//  Radar event pulses (RadarEventClass, list @0xB04DAC, AddEvent @0x65FA70,
+//  ctor @0x65FB80) draw into the enlarged radar surface but their cleanup
+//  path mis-targets at stride>512 -> the animation frames are never erased
+//  (magenta trails, user screenshots 2026-08-19; the 9 blit-clip immediates
+//  applied 16/16 but did not cure it -> the erase path is still unfound).
+//  Until it is root-caused, suppress event CREATION on big strides: skip the
+//  whole AddEvent with EAX=1 ("created") so callers still run their EVA
+//  under-attack announcements and duplicate-suppression logic -- we lose only
+//  the cosmetic pulse. The bare `ret 4` @0x65FB47 unwinds the stack cleanly
+//  (never manipulate R->ESP -- the popad footgun). NO-OP at stride 512.
+DEFINE_HOOK(65FA70, RadarEvent_Suppress_BigStride, 6)
+{
+    if (g_MapStride <= 512) return 0;   // vanilla: run the original AddEvent
+    R->EAX(1);
+    return 0x65FB47;                    // bare ret 4
+}
+
+// ------------------------------------------------------------------
 //  THIRD (hierarchical) A* node pool cap. Crash 20260818-175901: the
 //  hierarchical search fn (~0x42C2B0) allocates 16-byte nodes from the
 //  [AStar+0x64] pool (ctor malloc 0x27100 = exactly 10,000 nodes) using a
