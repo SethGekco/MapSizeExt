@@ -1454,7 +1454,16 @@ DEFINE_HOOK(578290, CellIterator_OOBGuard, 6)
             // place vanilla's walk terminates on a null border cell.
             if (cell != 0)
             {
-                if (cell < 0x00400000 || cell >= 0x40000000)
+                // LAA-aware bounds (2026-08-19, THE 1000x1000 "south border" bug):
+                // the old upper bound 0x40000000 (1 GB) falsely flagged VALID cells --
+                // a 1000x1000 map's ~680 MB of CellClass allocations crosses 1 GB
+                // mid-population, so the first cell allocated above it (ry~1259)
+                // tripped this guard and the shared full-map iterator stopped there:
+                // no passability/shroud/zone init south of that row ("invisible
+                // border", aircraft-only region). Under LAA the heap legitimately
+                // reaches ~0xFFxxxxxx; the CELL IDENTITY check below is the real
+                // discriminator, this range test only avoids deref of wild values.
+                if (cell < 0x00110000 || cell >= 0xF0000000)
                     stop = true;                       // wild ptr: don't even deref it
                 else
                 {

@@ -657,7 +657,25 @@ static bool PatchImm32(DWORD immVA, DWORD expect, DWORD nv, FILE* log, const cha
 int ApplyRadarPatches(FILE* log)
 {
     if (g_MapStride == 512) { if (log) fprintf(log, "[radar] surfaces stay 512  [no-op]\n"); return 0; }
-    const DWORD scale = (DWORD)g_MapStride / 512u;   // 2 @1024, 4 @2048
+    DWORD scale = (DWORD)g_MapStride / 512u;         // 2 @1024, 4 @2048
+    // Size by MAP DIMS, not just stride (2026-08-19, the 1000x1000 minimap
+    // right-clip): the radar diamond needs ~(W+H) px of width on the 400-wide
+    // base surface; stride/512 gave 1600 px which fits 700x700 (1400) but
+    // clips 1000x1000 (2000). Read spawnmap.ini like the subzone picker does.
+    {
+        char ini[MAX_PATH];
+        GetModuleFileNameA(nullptr, ini, MAX_PATH);
+        char* s = strrchr(ini, '\\'); if (s) *(s + 1) = '\0';
+        strcat_s(ini, "spawnmap.ini");
+        char buf[64] = { 0 };
+        GetPrivateProfileStringA("Map", "Size", "", buf, sizeof(buf), ini);
+        int mx = 0, my = 0, mw = 0, mh = 0;
+        if (sscanf_s(buf, "%d,%d,%d,%d", &mx, &my, &mw, &mh) == 4 && mw > 0 && mh > 0)
+        {
+            const DWORD need = (DWORD)(mw + mh) / 400u + 1u;   // 700x700 -> 4 (unchanged), 1000x1000 -> 6
+            if (need > scale) scale = need;
+        }
+    }
     const DWORD surfW = 400u * scale;
     const DWORD surfH = 640u * scale;
     const DWORD bytes = surfW * surfH * 2u;          // 0x7D000 * scale^2
