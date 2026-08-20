@@ -197,22 +197,15 @@ static void DumpVisibleCellsLighting()
 }
 
 
-DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
-{
-    // NOTE: needed at 1024 even in curated mode -- deferring it (M2) broke the
-    // multi-cell building foundation (1-cell) and standard-map elevation.
-    int y = R->EAX<int>();
-    int x = R->ECX<int>();
-    int index = y * g_MapStride + x;
-    R->EAX(index);
-
-    DumpMapStateOnce();           // MapClass::Instance dimension dump (diagnostic, once)
-    DumpVisibleCellsLighting();   // TacticalClass VisibleCells LightConvert probe (once, late)
-
-    if (index < 0)             return 0x565709;  // js  (negative)
-    if (index >= g_MapTotal)   return 0x565709;  // cmp/jge (out of bounds)
-    return 0x5656F8;                             // valid -> array load
-}
+// (MapClass operator[](Cell&) @0x5656EA, lepton op @0x565757 and IsCellValid
+// @0x5657F1 were Phase-1 TRAMPOLINE hooks. Profiling (2026-08-19 stutter
+// samples) showed Syringe dispatch on these per-cell-access paths as the top
+// non-idle CPU bucket -- thousands of calls per frame at ~50-100 cycles of
+// trampoline overhead each vs ~3 for the patched instruction. They only widen
+// power-of-2 stride math, so they are now BYTE PATCHES:
+// ApplyHotAccessorPatches() in Patches.cpp. The diagnostics they hosted
+// (DumpMapStateOnce / DumpVisibleCellsLighting / FactoryVtableSentinel) moved
+// to the moderate-frequency UpdatePathfinding hook.)
 
 // ============================================================
 //  HOOK B1: shroud/visibility buffer alloc  @ 0x48EB12 (6 bytes)
@@ -287,30 +280,6 @@ DEFINE_HOOK(483B32, MapClass_InlineAccess_Stride, 6)
 // ============================================================
 static void FactoryVtableSentinel();  // defined after DeployDiagLog below
 
-DEFINE_HOOK(565757, MapClass_LeptonOp_Stride, 5)
-{
-    R->EDX(R->EDX<int>() * g_MapStride + R->ESI<int>());
-    DumpMapStateOnce();  // diagnostic (once) - hot during pan/render
-    DumpVisibleCellsLighting();  // lighting probe (once)
-    FactoryVtableSentinel();     // crash-#5 hunt: catch the first factory corruption
-    return 0x56575C;  // js 0x56577a
-}
-
-// ============================================================
-//  HOOK E: IsCellValid  @ 0x5657F1 (5 bytes)
-//    5657F1: shl edx,0x9   Y * 512   \ 5 stolen bytes
-//    5657F4: add edx,eax   + X       /
-//    5657F6: cmp [ecx+edx*4],0x0   <- resume target
-//  (This site was listed as "hooked" in the research notes but
-//   had no actual DEFINE_HOOK; without it IsCellValid mis-indexes
-//   on any stride != 512.)
-// ============================================================
-DEFINE_HOOK(5657F1, IsCellValid_Stride, 5)
-{
-    R->EDX(R->EDX<int>() * g_MapStride + R->EAX<int>());
-    DumpMapStateOnce();  // diagnostic (once)
-    return 0x5657F6;  // cmp [ecx+edx*4],0x0
-}
 
 // ============================================================
 //  MAP DIMENSION GATE HOOKS
@@ -1354,6 +1323,9 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 {
     if (g_MapStride > 512)
     {
+        DumpMapStateOnce();           // one-shot dimension dump (was on the lepton hook)
+        DumpVisibleCellsLighting();   // one-shot lighting probe   (was on the lepton hook)
+        FactoryVtableSentinel();      // crash-#5 hunt, 2s-throttled (was on the lepton hook)
         DWORD esp = R->ESP();
         int sx = *reinterpret_cast<short*>(esp + 0x4);
         int sy = *reinterpret_cast<short*>(esp + 0x6);

@@ -1043,6 +1043,33 @@ int ApplyAStarPoolPatches(FILE* log)
     return 0;
 }
 
+// The three hottest cell-access sites, formerly Phase-1 TRAMPOLINE hooks
+// (Syringe dispatch on per-cell paths = the top non-idle CPU bucket in the
+// 2026-08-19 stutter profile). Now plain byte patches:
+//   0x5656EA  operator[](Cell&): shl eax,9 -> log2(stride); its bound
+//             cmp eax,0x40000 @0x5656F1 is covered by the broad sweep, but
+//             patch it here too (verify-skip if already done) for curated mode.
+//   0x565757  operator[](lepton): shl edx,9; bound is DYNAMIC ([ecx+0x140]).
+//   0x5657F1  IsCellValid: shl edx,9; no immediate bound.
+// Curated mode's table already rewrites 0x565757/0x5657F1 to 0x0A first;
+// the expect-0x09 verify makes those skips harmless.
+int ApplyHotAccessorPatches(FILE* log)
+{
+    const int shift = Log2Exact(g_MapStride);
+    if (shift < 0 || shift == 9)
+    {
+        if (log) fprintf(log, "[hotacc]  accessors stay x512  [no-op]\n");
+        return 0;
+    }
+    int n = 0;
+    n += PatchShiftC1(0x5656EA, static_cast<BYTE>(shift));
+    n += PatchShiftC1(0x565757, static_cast<BYTE>(shift));
+    n += PatchShiftC1(0x5657F1, static_cast<BYTE>(shift));
+    n += PatchImm32(0x5656F1 + 1, 0x40000, (DWORD)g_MapTotal, nullptr, "hotacc");
+    if (log) fprintf(log, "[hotacc]  hot cell accessors byte-patched (were trampoline hooks) : %d/4\n", n);
+    return n;
+}
+
 int ApplyModulePatches(FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);

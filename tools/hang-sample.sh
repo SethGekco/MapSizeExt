@@ -42,6 +42,8 @@ OUT=~/Desktop/hang-$(date +%Y%m%d-%H%M%S).txt
 {
     echo "=== $SAMPLES sample(s) of gamemd PID $PID ($(cat /proc/$PID/comm)) at $(date) ==="
     grep -E 'Name|State|Threads' /proc/$PID/status
+    echo "--- module map (names the DLL owning any 0x7xxxxxxx sample) ---"
+    grep -iE '\.(exe|dll)' /proc/$PID/maps | awk '{print $1" "$6}' | sort -u
     for i in $(seq 1 "$SAMPLES"); do
         echo "=== gdb stack sample #$i / $SAMPLES ==="
         $SUDO gdb -p "$PID" -batch \

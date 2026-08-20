@@ -78,6 +78,7 @@ static void ApplyInit()
         {
             fprintf(f, "[mode] CuratedBase=1 -> Krisztiaan curated 74-patch conversion; broad sweep SKIPPED\n");
             ApplyCuratedBase(f);
+            ApplyHotAccessorPatches(f);
             // His base handles Antares's stride-512 MapRevealer via his accessor
             // hook (not yet ported); until then we still need OUR Antares/Phobos
             // module patches or the shroud reveals in stripes (BUG-ATLAS 2.11).
@@ -90,6 +91,7 @@ static void ApplyInit()
         else
         {
         if (cfg.PatchStride)  ApplyStridePatches(f); else fprintf(f, "[stride]  DISABLED via INI\n");
+        if (cfg.PatchStride)  ApplyHotAccessorPatches(f);
         if (cfg.PatchStride)  ApplyCellArrayPopulationStride(f); else fprintf(f, "[cellpop] DISABLED via INI\n");
         if (cfg.PatchBounds)  ApplyBoundsPatches(f, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0); else fprintf(f, "[bounds]  DISABLED via INI\n");
         if (cfg.PatchBounds)  ApplyOccupancyBoundPatches(f); else fprintf(f, "[occ]     DISABLED via INI\n");
@@ -112,12 +114,14 @@ static void ApplyInit()
         if (cfg.CuratedBase)
         {
             ApplyCuratedBase(nullptr);
+            ApplyHotAccessorPatches(nullptr);
             ApplyModulePatches(nullptr);
             ApplyAntaresPatches(nullptr);
         }
         else
         {
         if (cfg.PatchStride)  ApplyStridePatches(nullptr);
+        if (cfg.PatchStride)  ApplyHotAccessorPatches(nullptr);
         if (cfg.PatchStride)  ApplyCellArrayPopulationStride(nullptr);
         if (cfg.PatchBounds)  ApplyBoundsPatches(nullptr, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0);
         if (cfg.PatchBounds)  ApplyOccupancyBoundPatches(nullptr);
