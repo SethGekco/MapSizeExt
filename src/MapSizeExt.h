@@ -77,6 +77,7 @@ extern int g_CrashGuard;        // 1 = GetCellAt garbage-slot guard active (INI 
 // N = Y*base + X; we decode with the same base. Set per-map at waypoint read; 1000
 // (absent key / vanilla) == unchanged behaviour. See Hooks.cpp Waypoint_CoordBaseDecode.
 extern int g_CoordBase;
+extern int g_DiagVerbose;      // per-call trace logging (PATH/ENC/DEC/REVEAL), default 0
 
 // --- Vanilla [Waypoints] reader cell-number decode (base 1000) ----
 // 68BE0C: mov ebp,0x3e8 ; idiv -> X=N%1000, then Y=N/1000 recomputed via the

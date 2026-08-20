@@ -37,6 +37,7 @@ int g_MapMaxW         = 512;
 int g_MapMaxH         = 512;
 int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
 int g_CoordBase       = 1000;    // per-map cell-number base (1000 = vanilla)
+int g_DiagVerbose     = 0;       // hot per-call trace logs off by default (file I/O = lag)
 
 // ============================================================
 //  HOOK A: MapClass::operator[](Cell&)  @ 0x5656EA (7 bytes)
@@ -827,8 +828,9 @@ DEFINE_HOOK(567F34, RevealArea2_ShroudWrite_Diag, 6)
         int cyr = *reinterpret_cast<short*>(cell + 0x26);
         signed char al = static_cast<signed char>(R->EAX() & 0xFF);
         DWORD flags = *reinterpret_cast<DWORD*>(cell + 0x140);
-        DeployDiagLog("REVEAL (%d,%d) new=%d flags=0x%X rev=%d\n",
-                      cxr, cyr, (int)al, flags, (int)(flags & 0x3));
+        if (g_DiagVerbose)
+            DeployDiagLog("REVEAL (%d,%d) new=%d flags=0x%X rev=%d\n",
+                          cxr, cyr, (int)al, flags, (int)(flags & 0x3));
     }
     *reinterpret_cast<signed char*>(R->EBX() + 0x120) = static_cast<signed char>(R->EAX() & 0xFF);
     return 0x567F3A;
@@ -1073,6 +1075,7 @@ DEFINE_HOOK(42C712, AStar_HierNodePoolCap, 8)
 // code) and its arithmetic. Shared cap keeps the log bounded.
 static bool TraceBudget()
 {
+    if (!g_DiagVerbose) return false;   // hot traces off by default (per-line file I/O)
     static int n = 0;
     return ++n <= 600;
 }
@@ -1098,7 +1101,7 @@ DEFINE_HOOK(6E6B51, CellTarget_Encode1_CoordBase, 6)
     if (g_CoordBase <= 1000) return 0;
     const DWORD y = R->ECX(), x = R->EDX();
     if (TraceBudget())
-        DeployDiagLog("ENC1 (%d,%d) -> %u\n", (int)x, (int)y, x + y * (DWORD)g_CoordBase);
+        if (g_DiagVerbose) DeployDiagLog("ENC1 (%d,%d) -> %u\n", (int)x, (int)y, x + y * (DWORD)g_CoordBase);
     R->ECX(y * (DWORD)(g_CoordBase >> 3));          // ecx=Y -> Y*(base/8)
     return 0x6E6B5A;                                // lea ecx,[edx+ecx*8]; store
 }
@@ -1109,7 +1112,7 @@ DEFINE_HOOK(6E6B89, CellTarget_Encode2_CoordBase, 6)
     if (TraceBudget())
     {
         const int xlep = *reinterpret_cast<int*>(R->ESI());     // coord.X leptons
-        DeployDiagLog("ENC2 (%d,%d)\n", xlep >> 8, y);
+        if (g_DiagVerbose) DeployDiagLog("ENC2 (%d,%d)\n", xlep >> 8, y);
     }
     R->EDI((DWORD)y * (DWORD)(g_CoordBase >> 3));   // eax=Y -> edi=Y*(base/8)
     return 0x6E6B92;                                // X conv; lea eax,[eax+edi*8]
@@ -1177,7 +1180,7 @@ DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
                 }
             }
         }
-        DeployDiagLog("DEC1 %u -> (%d,%d)\n", N, rx, ry);
+        if (g_DiagVerbose) DeployDiagLog("DEC1 %u -> (%d,%d)\n", N, rx, ry);
     }
     *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E6EE5)
     R->EDX((DWORD)ry);                                          // Y; tail: eax=edx,shr 31(=0),add
@@ -1199,7 +1202,7 @@ DEFINE_HOOK(6E7C2C, CellTarget_Decode2_CoordBase, 5)
             if ((v >= 0x401000 && v < 0x7E0000) || (v >= 0x70000000 && v < 0x80000000))
             { p += sprintf_s(chain+p, sizeof(chain)-p, " %X", v); ++f; }
         }
-        DeployDiagLog("DEC2 %u -> (%d,%d) stk:%s\n", N, rx, ry, chain);
+        if (g_DiagVerbose) DeployDiagLog("DEC2 %u -> (%d,%d) stk:%s\n", N, rx, ry, chain);
     }
     *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E7C39)
     R->EDX((DWORD)ry);
@@ -1381,8 +1384,9 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
             dx  = *reinterpret_cast<short*>(dest + 0x24);   // CellClass MapCoords
             dy  = *reinterpret_cast<short*>(dest + 0x26);
         }
-        DeployDiagLog("PATH 0x%X TGT(%d,%d) dest=%08X vt=%08X destcell(%d,%d)\n",
-                      R->ECX(), sx, sy, dest, dvt, dx, dy);
+        if (g_DiagVerbose)
+            DeployDiagLog("PATH 0x%X TGT(%d,%d) dest=%08X vt=%08X destcell(%d,%d)\n",
+                          R->ECX(), sx, sy, dest, dvt, dx, dy);
     }
     R->EAX(0x1F9C);          // replicate mov eax,0x1f9c
     return 0x4D3925;

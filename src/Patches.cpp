@@ -688,7 +688,22 @@ int ApplyRadarPatches(FILE* log)
     n += PatchImm32(0x5FD516 + 2, 0x200,   gate,  log, "radar");  // cmp edi,dim
     n += PatchImm32(0x5FD647 + 2, 0x200,   gate,  log, "radar");  // cmp esi,dim
     n += PatchImm32(0x5FD650 + 2, 0x200,   gate,  log, "radar");  // cmp edi,dim
-    if (log) fprintf(log, "[radar] surface %ux%u (%u bytes), gate %u : %d/7\n",
+    // Radar blit/clip helpers (0x68E8xx-0x6904xx) carry NINE more hardcoded
+    // 400/640 surface-dim immediates. Left unscaled, the radar-EVENT erase
+    // (the spinning under-attack rectangle) clips its restore rect to the
+    // vanilla 400x640 corner of the enlarged surface -> animations outside it
+    // never get erased = permanent "snail trail" patterns (user-observed on
+    // 1000x1000, 2026-08-19). Scale them with the surface.
+    n += PatchImm32(0x68E8B4, 0x280, surfH, log, "radar");   // mov ecx,640
+    n += PatchImm32(0x68EAD8, 0x190, surfW, log, "radar");   // mov edx,400
+    n += PatchImm32(0x68EAE4, 0x280, surfH, log, "radar");   // mov ecx,640
+    n += PatchImm32(0x6901B8, 0x190, surfW, log, "radar");   // push 400 (clip)
+    n += PatchImm32(0x6901BD, 0x280, surfH, log, "radar");   // push 640 (clip)
+    n += PatchImm32(0x6901DF, 0x280, surfH, log, "radar");   // mov [esp+..],640
+    n += PatchImm32(0x6901E7, 0x190, surfW, log, "radar");   // mov [esp+..],400
+    n += PatchImm32(0x690449, 0x190, surfW, log, "radar");   // mov ecx,400
+    n += PatchImm32(0x690460, 0x280, surfH, log, "radar");   // mov edx,640
+    if (log) fprintf(log, "[radar] surface %ux%u (%u bytes), gate %u : %d/16\n",
                      surfW, surfH, bytes, gate, n);
     return n;
 }
