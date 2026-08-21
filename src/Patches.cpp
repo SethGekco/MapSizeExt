@@ -1089,6 +1089,50 @@ int ApplyAStarPoolPatches(FILE* log)
 //   0x5657F1  IsCellValid: shl edx,9; no immediate bound.
 // Curated mode's table already rewrites 0x565757/0x5657F1 to 0x0A first;
 // the expect-0x09 verify makes those skips harmless.
+//  PERIODIC FULL-MAP SHROUD SWEEP THROTTLE  (the "runs fine then pauses for a
+//  second" hitch, profiled 2026-08-20).
+//  The main loop @0x55B2A6 runs `if (frame % 120 == 0) sub_578100()`, and that
+//  function does TWO complete walks of the cell diamond: (1) redraw cells
+//  flagged 0x20, (2) for EVERY cell recompute its shroud/fog tile index via
+//  0x6D8700 (the 0x6D8640 family -- which samples 8 neighbours through
+//  GetCellAt) and mark it dirty when it changed. Cost is O(map area) x ~8 cell
+//  lookups: ~640K lookups on a vanilla 200x200 (invisible) but ~16 MILLION on
+//  1000x1000 -- a ~1 s freeze every 120 frames. It is a consistency sweep;
+//  interactive shroud still updates through the normal incremental reveal
+//  path, so running it less often on big maps costs only how quickly a missed
+//  fog edge is caught up.
+//  Fix: scale the 120-frame period with map area (1x at vanilla sizes -> 8x at
+//  1000x1000), so the hitch keeps its size but becomes rare. NO-OP at stride
+//  512, and unchanged for maps that are not actually big.
+int ApplyShroudSweepThrottle(FILE* log)
+{
+    if (g_MapStride <= 512)
+    {
+        if (log) fprintf(log, "[sweep]   full-map shroud sweep unchanged (stride %d)\n", g_MapStride);
+        return 0;
+    }
+    char ini[MAX_PATH];
+    GetModuleFileNameA(nullptr, ini, MAX_PATH);
+    char* s = strrchr(ini, '\\'); if (s) *(s + 1) = '\0';
+    strcat_s(ini, "spawnmap.ini");
+    char buf[64] = { 0 };
+    GetPrivateProfileStringA("Map", "Size", "", buf, sizeof(buf), ini);
+    int mx = 0, my = 0, mw = 0, mh = 0;
+    int factor = 4;                                   // unknown size -> middle ground
+    if (sscanf_s(buf, "%d,%d,%d,%d", &mx, &my, &mw, &mh) == 4 && mw > 0 && mh > 0)
+    {
+        const int cells = (2 * mw - 1) * mh;           // iso diamond area
+        factor = cells / 200000;                       // ~200x200 vanilla = 1
+        if (factor < 1) factor = 1;
+        if (factor > 8) factor = 8;                    // cap: >8x delays fog catch-up too long
+    }
+    const DWORD period = 120u * (DWORD)factor;
+    const int n = PatchImm32(0x55B29D, 0x78, period, nullptr, "sweep");
+    if (log) fprintf(log, "[sweep]   full-map shroud sweep every %u frames (was 120, map %dx%d) : %d/1\n",
+                     period, mw, mh, n);
+    return n;
+}
+
 int ApplyHotAccessorPatches(FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);

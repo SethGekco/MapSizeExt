@@ -64,6 +64,10 @@ int ApplyModulePatches(FILE* log);
 // trampoline hooks; now byte patches. Call in BOTH broad and curated modes.
 int ApplyHotAccessorPatches(FILE* log);
 
+// Throttles the every-120-frame full-map shroud/fog consistency sweep
+// (0x578100) by map area -- the periodic ~1s hitch on big maps. NO-OP at 512.
+int ApplyShroudSweepThrottle(FILE* log);
+
 // Antares.dll has its OWN compiled-in stride 512 (YRpp GetCellIndex Y<<9 +
 // MaxCells 0x40000), inlined 73x. Patch its .text like gamemd so Antares-
 // reimplemented features (shroud reveal via MapRevealer, etc.) use stride 1024.
