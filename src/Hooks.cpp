@@ -840,43 +840,11 @@ DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 5)
     return 0;              // stride 512, non-null singleton -> run original
 }
 
-// ============================================================
-//  MapClass::GetCellAt(coord) garbage-slot guard  @0x565766
-//  0x565730 converts a lepton coord to a cell index (shl @0x565757 patched to
-//  1024), bound-checks (js / cmp [Map+0x140]), then returns Items[index] unless
-//  it is null (test/je -> a safe dummy cell). BUT the Items array corners outside
-//  the populated iso-diamond hold NON-NULL GARBAGE at 1024 (leftover pointers,
-//  e.g. 0x465F5445 = "ET_F" string data), so the null check passes and it returns
-//  garbage -> caller derefs [garbage+0x140] -> AV (observed: a HunterSeeker/flying
-//  unit's cell lookup @0x4CDD5F).
-//  We hook the slot read: a real cell is a heap object whose MapCoords match the
-//  slot index; anything else is garbage -> force it to 0 so the function's own
-//  test/je routes it to the dummy cell. At entry ECX=Map, EDX=index (already
-//  validated in-bounds). Replicate `mov ecx,[ecx+0x13c]; mov edx,[ecx+edx*4]`
-//  and continue at the test. NO-OP at stride 512.
-DEFINE_HOOK(565766, GetCellAt_GarbageGuard, 6)
-{
-    const DWORD map   = R->ECX();
-    const DWORD items = *reinterpret_cast<DWORD*>(map + 0x13C);
-    const int   index = static_cast<int>(R->EDX());
-    DWORD cell = *reinterpret_cast<DWORD*>(items + static_cast<DWORD>(index) * 4);
-    if (g_MapStride > 512 && g_CrashGuard && cell)
-    {
-        bool ok = (cell >= 0x04000000 && cell < 0x40000000);   // plausible heap object
-        if (ok)
-        {
-            const int ex = index % static_cast<int>(g_MapStride);
-            const int ey = index / static_cast<int>(g_MapStride);
-            const int cx = *reinterpret_cast<short*>(cell + 0x24);
-            const int cy = *reinterpret_cast<short*>(cell + 0x26);
-            ok = (cx == ex && cy == ey);                        // identity: coords match slot
-        }
-        if (!ok) cell = 0;                                      // garbage -> null -> dummy
-    }
-    R->ECX(items);        // replicate mov ecx,[ecx+0x13c]
-    R->EDX(cell);         // replicate (validated) mov edx,[ecx+edx*4]
-    return 0x56576F;      // continue at `test edx,edx`
-}
+// (GetCellAt_GarbageGuard @0x565766 REMOVED 2026-08-20: trampolined every
+// lepton->cell lookup AND carried the pre-LAA `< 0x40000000` bound, silently
+// converting valid above-1GB cells to the dummy at 1000x1000. The garbage-slot
+// era it guarded is over: the array is zero-filled and population is verified
+// clean; the function's own null->dummy check handles empties.)
 
 // ============================================================
 //  PATHFINDING DIAGNOSTIC  (stride > 512)
@@ -1484,79 +1452,12 @@ DEFINE_HOOK(58215B, Subzone_SaturateID, 5)   // mov cx,[esp+0x10]
     return 0;   // stride 512: run original
 }
 
-// ------------------------------------------------------------------
-//  Safety net for the full-map cell iterator @0x578290 (the passability/
-//  movement-zone walk fixed by ApplyIteratorStridePatches). The walk terminates
-//  by hitting NULL border cells; if the stride-adjusted geometry ever fails to
-//  land on that null border, the walk would step the slot pointer past the
-//  Cells.Items array and return a GARBAGE cell -> UpdatePassability then writes
-//  through it and corrupts a live object's vtable (observed crash: virtual call
-//  to heap garbage 0x07BF0035, via the coord-transform path). This guard checks
-//  the current slot pointer [Map+0x118] at entry; if it is outside
-//  [Items, Items + MapTotal*4) it returns a NULL cell (EAX=0), which makes the
-//  caller's `while (cell != null)` loop stop cleanly. Jumps to the bare `ret`
-//  at 0x5782D4 (no registers were pushed yet at entry, so no imbalance).
-//  When the geometry is correct this never fires; it only converts a would-be
-//  OOB corruption into a clean, early loop termination. NO-OP at stride 512.
-static int g_IterGuardFires = 0;
-DEFINE_HOOK(578290, CellIterator_OOBGuard, 6)
-{
-    const DWORD map   = R->ECX();
-    const DWORD items = *reinterpret_cast<DWORD*>(map + 0x13C);   // Cells.Items
-    const DWORD cur   = *reinterpret_cast<DWORD*>(map + 0x118);   // current slot ptr
-    if (g_MapStride > 512 && items)
-    {
-        bool stop = (cur < items || cur >= items + static_cast<DWORD>(g_MapTotal) * 4); // slot OOB
-        DWORD cell = 0;
-        if (!stop)
-        {
-            cell = *reinterpret_cast<DWORD*>(cur);   // cell ptr in this slot (slot is in-bounds)
-            // The population loop fills only the iso-diamond of valid cells; the array
-            // corners outside it are never written and hold GARBAGE cell pointers.
-            // Address-range checks fail (real cells can be below 0x10000000), so use
-            // CELL IDENTITY: a real cell at slot N has MapCoords (X@+0x24, Y@+0x26)
-            // equal to N's (X = idx % stride, Y = idx / stride). Garbage won't match.
-            // Stopping at the first mismatch = the valid/garbage boundary = the same
-            // place vanilla's walk terminates on a null border cell.
-            if (cell != 0)
-            {
-                // LAA-aware bounds (2026-08-19, THE 1000x1000 "south border" bug):
-                // the old upper bound 0x40000000 (1 GB) falsely flagged VALID cells --
-                // a 1000x1000 map's ~680 MB of CellClass allocations crosses 1 GB
-                // mid-population, so the first cell allocated above it (ry~1259)
-                // tripped this guard and the shared full-map iterator stopped there:
-                // no passability/shroud/zone init south of that row ("invisible
-                // border", aircraft-only region). Under LAA the heap legitimately
-                // reaches ~0xFFxxxxxx; the CELL IDENTITY check below is the real
-                // discriminator, this range test only avoids deref of wild values.
-                if (cell < 0x00110000 || cell >= 0xF0000000)
-                    stop = true;                       // wild ptr: don't even deref it
-                else
-                {
-                    unsigned idx = static_cast<unsigned>((cur - items) / 4);
-                    int ex = static_cast<int>(idx % static_cast<unsigned>(g_MapStride));
-                    int ey = static_cast<int>(idx / static_cast<unsigned>(g_MapStride));
-                    int cx = *reinterpret_cast<short*>(cell + 0x24);
-                    int cy = *reinterpret_cast<short*>(cell + 0x26);
-                    if (cx != ex || cy != ey) stop = true;   // coords don't match slot -> garbage
-                }
-            }
-        }
-        if (stop)
-        {
-            if (g_IterGuardFires < 25)
-            {
-                ++g_IterGuardFires;
-                DeployDiagLog("ITER guard #%d: slot=0x%X cell=0x%X items=0x%X -> stop\n",
-                              g_IterGuardFires, cur, cell, items);
-            }
-            R->EAX(0);           // null cell -> caller's iteration loop stops
-            return 0x5782D4;     // bare `ret`
-        }
-    }
-    R->EAX(*reinterpret_cast<DWORD*>(map + 0x114));   // replicate mov eax,[ecx+0x114]
-    return 0x578296;
-}
+// (CellIterator_OOBGuard @0x578290 REMOVED 2026-08-20: it trampolined EVERY
+// step of every full-map walk (~2M cells/pass at 1000x1000) and profiling put
+// it at ~9%% of main-thread time -- a prime hitch source. Its only real fire
+// ever was its own LAA false positive (the 1000x1000 "south border"). The
+// root causes it guarded against (population stride, iterator geometry) are
+// fixed and dump-verified clean; crash dumps will catch any regression.)
 
 // ============================================================
 //  OVERLAY-DRAW DISPATCH DIAGNOSTIC (stride>512). Two paths read the wall frame:
@@ -1616,34 +1517,6 @@ DEFINE_HOOK(47F96A, OverlayP2_Diag, 6)
     return 0;   // continue (mov cl,[ebx+0x2a8])
 }
 
-// ============================================================
-//  SHARED CELL-LOOKUP CALLER PROBE (stride>512). 0x5657a0 = MapClass::
-//  operator[](CellStruct&) -- EVERY overlay/wall producer funnels its neighbour
-//  resolution through it (EDX=CellStruct* {X@+0, Y@+2}). We hook @0x5657BB
-//  (`mov ecx,[ecx+0x13c]`, 6 bytes) -- reached only after the in-bounds check
-//  passed, so ESI is already popped and [ESP] holds the CALLER return address.
-//  Logging caller + requested (X,Y), gated to the wall build area, reveals which
-//  function computes NAWALL's connection and exactly which neighbour cell it asks
-//  for -- so a wrong N/S request (row-crossing) becomes visible regardless of
-//  which producer it is. EAX here already = the computed cell index.
-// ============================================================
-static int g_WConnFires = 0;
-DEFINE_HOOK(5657BB, CellLookup_CallerProbe, 6)
-{
-    if (g_MapStride > 512 && g_WConnFires < 500)
-    {
-        DWORD esp    = R->ESP();
-        DWORD caller = *reinterpret_cast<DWORD*>(esp);         // return address
-        DWORD cs     = R->EDX();                               // CellStruct*
-        int rx = *reinterpret_cast<short*>(cs + 0);
-        int ry = *reinterpret_cast<short*>(cs + 2);
-        if (rx >= 65 && rx < 90 && ry >= 65 && ry < 115)       // wall build window
-        {
-            DeployDiagLog("LOOK caller=0x%X req(%d,%d) idx=%d\n",
-                          caller, rx, ry, R->EAX<int>());
-            ++g_WConnFires;
-        }
-    }
-    R->ECX(*reinterpret_cast<DWORD*>(R->ECX() + 0x13C));       // replicate mov ecx,[ecx+0x13c]
-    return 0x5657C1;
-}
+// (CellLookup_CallerProbe @0x5657BB REMOVED 2026-08-20: a wall-connect-era
+// diagnostic left sitting on GetCellAt's SUCCESS path -- it taxed every cell
+// lookup in the game since that session; profiling showed it hot at end-game.)
