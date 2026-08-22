@@ -37,6 +37,7 @@ int g_MapMaxW         = 512;
 int g_MapMaxH         = 512;
 int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
 int g_CoordBase       = 1000;    // per-map cell-number base (1000 = vanilla)
+int g_DiagVerbose     = 0;       // hot per-call trace logs off by default (file I/O = lag)
 
 // ============================================================
 //  HOOK A: MapClass::operator[](Cell&)  @ 0x5656EA (7 bytes)
@@ -196,22 +197,15 @@ static void DumpVisibleCellsLighting()
 }
 
 
-DEFINE_HOOK(5656EA, MapClass_OperatorBracket_Stride, 7)
-{
-    // NOTE: needed at 1024 even in curated mode -- deferring it (M2) broke the
-    // multi-cell building foundation (1-cell) and standard-map elevation.
-    int y = R->EAX<int>();
-    int x = R->ECX<int>();
-    int index = y * g_MapStride + x;
-    R->EAX(index);
-
-    DumpMapStateOnce();           // MapClass::Instance dimension dump (diagnostic, once)
-    DumpVisibleCellsLighting();   // TacticalClass VisibleCells LightConvert probe (once, late)
-
-    if (index < 0)             return 0x565709;  // js  (negative)
-    if (index >= g_MapTotal)   return 0x565709;  // cmp/jge (out of bounds)
-    return 0x5656F8;                             // valid -> array load
-}
+// (MapClass operator[](Cell&) @0x5656EA, lepton op @0x565757 and IsCellValid
+// @0x5657F1 were Phase-1 TRAMPOLINE hooks. Profiling (2026-08-19 stutter
+// samples) showed Syringe dispatch on these per-cell-access paths as the top
+// non-idle CPU bucket -- thousands of calls per frame at ~50-100 cycles of
+// trampoline overhead each vs ~3 for the patched instruction. They only widen
+// power-of-2 stride math, so they are now BYTE PATCHES:
+// ApplyHotAccessorPatches() in Patches.cpp. The diagnostics they hosted
+// (DumpMapStateOnce / DumpVisibleCellsLighting / FactoryVtableSentinel) moved
+// to the moderate-frequency UpdatePathfinding hook.)
 
 // ============================================================
 //  HOOK B1: shroud/visibility buffer alloc  @ 0x48EB12 (6 bytes)
@@ -286,30 +280,6 @@ DEFINE_HOOK(483B32, MapClass_InlineAccess_Stride, 6)
 // ============================================================
 static void FactoryVtableSentinel();  // defined after DeployDiagLog below
 
-DEFINE_HOOK(565757, MapClass_LeptonOp_Stride, 5)
-{
-    R->EDX(R->EDX<int>() * g_MapStride + R->ESI<int>());
-    DumpMapStateOnce();  // diagnostic (once) - hot during pan/render
-    DumpVisibleCellsLighting();  // lighting probe (once)
-    FactoryVtableSentinel();     // crash-#5 hunt: catch the first factory corruption
-    return 0x56575C;  // js 0x56577a
-}
-
-// ============================================================
-//  HOOK E: IsCellValid  @ 0x5657F1 (5 bytes)
-//    5657F1: shl edx,0x9   Y * 512   \ 5 stolen bytes
-//    5657F4: add edx,eax   + X       /
-//    5657F6: cmp [ecx+edx*4],0x0   <- resume target
-//  (This site was listed as "hooked" in the research notes but
-//   had no actual DEFINE_HOOK; without it IsCellValid mis-indexes
-//   on any stride != 512.)
-// ============================================================
-DEFINE_HOOK(5657F1, IsCellValid_Stride, 5)
-{
-    R->EDX(R->EDX<int>() * g_MapStride + R->EAX<int>());
-    DumpMapStateOnce();  // diagnostic (once)
-    return 0x5657F6;  // cmp [ecx+edx*4],0x0
-}
 
 // ============================================================
 //  MAP DIMENSION GATE HOOKS
@@ -827,8 +797,9 @@ DEFINE_HOOK(567F34, RevealArea2_ShroudWrite_Diag, 6)
         int cyr = *reinterpret_cast<short*>(cell + 0x26);
         signed char al = static_cast<signed char>(R->EAX() & 0xFF);
         DWORD flags = *reinterpret_cast<DWORD*>(cell + 0x140);
-        DeployDiagLog("REVEAL (%d,%d) new=%d flags=0x%X rev=%d\n",
-                      cxr, cyr, (int)al, flags, (int)(flags & 0x3));
+        if (g_DiagVerbose)
+            DeployDiagLog("REVEAL (%d,%d) new=%d flags=0x%X rev=%d\n",
+                          cxr, cyr, (int)al, flags, (int)(flags & 0x3));
     }
     *reinterpret_cast<signed char*>(R->EBX() + 0x120) = static_cast<signed char>(R->EAX() & 0xFF);
     return 0x567F3A;
@@ -869,43 +840,11 @@ DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 5)
     return 0;              // stride 512, non-null singleton -> run original
 }
 
-// ============================================================
-//  MapClass::GetCellAt(coord) garbage-slot guard  @0x565766
-//  0x565730 converts a lepton coord to a cell index (shl @0x565757 patched to
-//  1024), bound-checks (js / cmp [Map+0x140]), then returns Items[index] unless
-//  it is null (test/je -> a safe dummy cell). BUT the Items array corners outside
-//  the populated iso-diamond hold NON-NULL GARBAGE at 1024 (leftover pointers,
-//  e.g. 0x465F5445 = "ET_F" string data), so the null check passes and it returns
-//  garbage -> caller derefs [garbage+0x140] -> AV (observed: a HunterSeeker/flying
-//  unit's cell lookup @0x4CDD5F).
-//  We hook the slot read: a real cell is a heap object whose MapCoords match the
-//  slot index; anything else is garbage -> force it to 0 so the function's own
-//  test/je routes it to the dummy cell. At entry ECX=Map, EDX=index (already
-//  validated in-bounds). Replicate `mov ecx,[ecx+0x13c]; mov edx,[ecx+edx*4]`
-//  and continue at the test. NO-OP at stride 512.
-DEFINE_HOOK(565766, GetCellAt_GarbageGuard, 6)
-{
-    const DWORD map   = R->ECX();
-    const DWORD items = *reinterpret_cast<DWORD*>(map + 0x13C);
-    const int   index = static_cast<int>(R->EDX());
-    DWORD cell = *reinterpret_cast<DWORD*>(items + static_cast<DWORD>(index) * 4);
-    if (g_MapStride > 512 && g_CrashGuard && cell)
-    {
-        bool ok = (cell >= 0x04000000 && cell < 0x40000000);   // plausible heap object
-        if (ok)
-        {
-            const int ex = index % static_cast<int>(g_MapStride);
-            const int ey = index / static_cast<int>(g_MapStride);
-            const int cx = *reinterpret_cast<short*>(cell + 0x24);
-            const int cy = *reinterpret_cast<short*>(cell + 0x26);
-            ok = (cx == ex && cy == ey);                        // identity: coords match slot
-        }
-        if (!ok) cell = 0;                                      // garbage -> null -> dummy
-    }
-    R->ECX(items);        // replicate mov ecx,[ecx+0x13c]
-    R->EDX(cell);         // replicate (validated) mov edx,[ecx+edx*4]
-    return 0x56576F;      // continue at `test edx,edx`
-}
+// (GetCellAt_GarbageGuard @0x565766 REMOVED 2026-08-20: trampolined every
+// lepton->cell lookup AND carried the pre-LAA `< 0x40000000` bound, silently
+// converting valid above-1GB cells to the dummy at 1000x1000. The garbage-slot
+// era it guarded is over: the array is zero-filled and population is verified
+// clean; the function's own null->dummy check handles empties.)
 
 // ============================================================
 //  PATHFINDING DIAGNOSTIC  (stride > 512)
@@ -990,17 +929,107 @@ DEFINE_HOOK(5657CF, CellLookup_Fail_GetCellAt, 6)
 //  overflow just reuses the top slot (path may fail) instead of corrupting heap.
 DEFINE_HOOK(42A466, AStar_PoolACap, 6)
 {
-    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x100000);
-    if (g_MapStride > 512 && cnt > 0xFFFE) cnt = 0xFFFE;
+    // Widened pools (VirtualAlloc + ApplyAStarPoolPatches): counter now at
+    // +0x400000, capacity 262,144 nodes. Cap stays as a last-resort guard.
+    if (g_MapStride <= 512) return 0;   // vanilla path untouched
+    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x400000);
+    if (cnt > 0x3FFFE) cnt = 0x3FFFE;
     R->EDX(cnt);
     return 0x42A46C;                      // resume after the replaced mov
 }
 DEFINE_HOOK(42A482, AStar_PoolBCap, 6)
 {
-    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x180000);
-    if (g_MapStride > 512 && cnt > 0x1FFFE) cnt = 0x1FFFE;
+    if (g_MapStride <= 512) return 0;   // vanilla path untouched
+    DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x600000);
+    if (cnt > 0x7FFFE) cnt = 0x7FFFE;
     R->EDX(cnt);
     return 0x42A488;                      // resume after the replaced mov
+}
+
+// ------------------------------------------------------------------
+//  RADAR EVENT SUPPRESSION at big strides (the "snail trail" workaround).
+//  Radar event pulses (RadarEventClass, list @0xB04DAC, AddEvent @0x65FA70,
+//  ctor @0x65FB80) draw into the enlarged radar surface but their cleanup
+//  path mis-targets at stride>512 -> the animation frames are never erased
+//  (magenta trails, user screenshots 2026-08-19; the 9 blit-clip immediates
+//  applied 16/16 but did not cure it -> the erase path is still unfound).
+//  Until it is root-caused, suppress event CREATION on big strides: skip the
+//  whole AddEvent with EAX=1 ("created") so callers still run their EVA
+//  under-attack announcements and duplicate-suppression logic -- we lose only
+//  the cosmetic pulse. The bare `ret 4` @0x65FB47 unwinds the stack cleanly
+//  (never manipulate R->ESP -- the popad footgun). NO-OP at stride 512.
+//  v2 (the v1 always-return-TRUE variant UNCAPPED the EVA announcements:
+//  the duplicate-suppression lives INSIDE AddEvent -- it returns FALSE when a
+//  live event of the same type is within RadarEventSuppressionDistances of
+//  the new one, and with no events ever created nothing was ever "near").
+//  Now the hook REPLICATES that logic against its own ring of virtual events,
+//  reading the engine's real per-type config (suppression distance int @
+//  0x7F0998+type*16, enable flag byte @0x7F09A4+type*16). AL=0 -> caller
+//  skips the EVA exactly like vanilla; AL=1 -> announce. ~30s validity
+//  approximates the visibility duration. Pulses still never drawn.
+DEFINE_HOOK(65FA70, RadarEvent_Suppress_BigStride, 6)
+{
+    if (g_MapStride <= 512) return 0;   // vanilla: run the original AddEvent
+    struct VirtEvent { int type; int x; int y; DWORD frame; };
+    static VirtEvent ring[16];
+    static int ringN = 0;
+    const int  type = R->ECX<int>() & 0xF;
+    const DWORD esp = R->ESP();
+    const int  x = *reinterpret_cast<short*>(esp + 4);   // packed cell arg
+    const int  y = *reinterpret_cast<short*>(esp + 6);
+    const DWORD now = *reinterpret_cast<DWORD*>(0xA8ED84);
+    const int  supp = *reinterpret_cast<int*>(0x7F0998 + (type << 4));
+    const bool on   = *reinterpret_cast<BYTE*>(0x7F09A4 + (type << 4)) != 0;
+    if (on)
+    {
+        for (int i = 0; i < 16; ++i)
+        {
+            const VirtEvent& v = ring[i];
+            if (v.frame == 0 || v.type != type) continue;
+            if (now - v.frame > 450) continue;            // ~30 s at game speed
+            const int dx = x - v.x, dy = y - v.y;
+            if (dx * dx + dy * dy < supp * supp)
+            {
+                R->EAX(0);
+                return 0x65FB52;                          // bare ret 4 (suppressed)
+            }
+        }
+    }
+    ring[ringN] = { type, x, y, now ? now : 1 };
+    ringN = (ringN + 1) & 15;
+    R->EAX(1);
+    return 0x65FB47;                                      // bare ret 4 (announced)
+}
+
+// ------------------------------------------------------------------
+//  A* pool VirtualAlloc widening support: the ctor's three pool mallocs are
+//  redirected to VirtualAlloc'd buffers sized to match the widened counter
+//  offsets that ApplyAStarPoolPatches writes (the 2026-08-18 widening attempt
+//  failed ONLY because the game CRT allocator cannot serve multi-MB blocks;
+//  VirtualAlloc can). Each hook sits ON the `call malloc`, sets EAX to the
+//  new zero-filled buffer and resumes at the `add esp,4` that follows, so the
+//  pushed size arg is popped normally. Paired with the byte patches; both are
+//  stride-gated so 512 stays fully vanilla.
+DEFINE_HOOK(42A7E8, AStar_PoolA_VAlloc, 5)     // pool A: 65,536 -> 262,144 nodes
+{
+    if (g_MapStride <= 512) return 0;
+    R->EAX(reinterpret_cast<DWORD>(
+        VirtualAlloc(nullptr, 0x400000 + 4, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)));
+    return 0x42A7ED;
+}
+DEFINE_HOOK(42A81C, AStar_PoolB_VAlloc, 5)     // pool B: 131,072 -> 524,288 nodes
+{
+    if (g_MapStride <= 512) return 0;
+    R->EAX(reinterpret_cast<DWORD>(
+        VirtualAlloc(nullptr, 0x600000 + 4, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)));
+    return 0x42A821;
+}
+DEFINE_HOOK(42A8E5, AStar_HierPool_VAlloc, 5)  // hier pool: 10,000 -> 80,000 nodes
+{
+    if (g_MapStride <= 512) return 0;
+    R->EAX(reinterpret_cast<DWORD>(
+        VirtualAlloc(nullptr, 0x138800, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)));
+    return 0x42A8EA;
 }
 
 // ------------------------------------------------------------------
@@ -1023,10 +1052,10 @@ DEFINE_HOOK(42C712, AStar_HierNodePoolCap, 8)
 {
     DWORD cnt = *reinterpret_cast<DWORD*>(R->ESP() + 0x2C);
     DWORD off = *reinterpret_cast<DWORD*>(R->ESP() + 0x30);
-    if (g_MapStride > 512 && cnt >= 9999)
+    if (g_MapStride > 512 && cnt >= 79999)
     {
-        cnt = 9999;                       // reuse top slot (pool holds 10,000)
-        off = 9999 * 16;
+        cnt = 79999;                      // reuse top slot (widened pool holds 80,000)
+        off = 79999 * 16;
     }
     else
     {
@@ -1073,6 +1102,7 @@ DEFINE_HOOK(42C712, AStar_HierNodePoolCap, 8)
 // code) and its arithmetic. Shared cap keeps the log bounded.
 static bool TraceBudget()
 {
+    if (!g_DiagVerbose) return false;   // hot traces off by default (per-line file I/O)
     static int n = 0;
     return ++n <= 600;
 }
@@ -1098,7 +1128,7 @@ DEFINE_HOOK(6E6B51, CellTarget_Encode1_CoordBase, 6)
     if (g_CoordBase <= 1000) return 0;
     const DWORD y = R->ECX(), x = R->EDX();
     if (TraceBudget())
-        DeployDiagLog("ENC1 (%d,%d) -> %u\n", (int)x, (int)y, x + y * (DWORD)g_CoordBase);
+        if (g_DiagVerbose) DeployDiagLog("ENC1 (%d,%d) -> %u\n", (int)x, (int)y, x + y * (DWORD)g_CoordBase);
     R->ECX(y * (DWORD)(g_CoordBase >> 3));          // ecx=Y -> Y*(base/8)
     return 0x6E6B5A;                                // lea ecx,[edx+ecx*8]; store
 }
@@ -1109,7 +1139,7 @@ DEFINE_HOOK(6E6B89, CellTarget_Encode2_CoordBase, 6)
     if (TraceBudget())
     {
         const int xlep = *reinterpret_cast<int*>(R->ESI());     // coord.X leptons
-        DeployDiagLog("ENC2 (%d,%d)\n", xlep >> 8, y);
+        if (g_DiagVerbose) DeployDiagLog("ENC2 (%d,%d)\n", xlep >> 8, y);
     }
     R->EDI((DWORD)y * (DWORD)(g_CoordBase >> 3));   // eax=Y -> edi=Y*(base/8)
     return 0x6E6B92;                                // X conv; lea eax,[eax+edi*8]
@@ -1177,7 +1207,7 @@ DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
                 }
             }
         }
-        DeployDiagLog("DEC1 %u -> (%d,%d)\n", N, rx, ry);
+        if (g_DiagVerbose) DeployDiagLog("DEC1 %u -> (%d,%d)\n", N, rx, ry);
     }
     *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E6EE5)
     R->EDX((DWORD)ry);                                          // Y; tail: eax=edx,shr 31(=0),add
@@ -1199,7 +1229,7 @@ DEFINE_HOOK(6E7C2C, CellTarget_Decode2_CoordBase, 5)
             if ((v >= 0x401000 && v < 0x7E0000) || (v >= 0x70000000 && v < 0x80000000))
             { p += sprintf_s(chain+p, sizeof(chain)-p, " %X", v); ++f; }
         }
-        DeployDiagLog("DEC2 %u -> (%d,%d) stk:%s\n", N, rx, ry, chain);
+        if (g_DiagVerbose) DeployDiagLog("DEC2 %u -> (%d,%d) stk:%s\n", N, rx, ry, chain);
     }
     *reinterpret_cast<short*>(R->ESP() + 4) = (short)rx;        // X (orig @0x6E7C39)
     R->EDX((DWORD)ry);
@@ -1351,6 +1381,9 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 {
     if (g_MapStride > 512)
     {
+        DumpMapStateOnce();           // one-shot dimension dump (was on the lepton hook)
+        DumpVisibleCellsLighting();   // one-shot lighting probe   (was on the lepton hook)
+        FactoryVtableSentinel();      // crash-#5 hunt, 2s-throttled (was on the lepton hook)
         DWORD esp = R->ESP();
         int sx = *reinterpret_cast<short*>(esp + 0x4);
         int sy = *reinterpret_cast<short*>(esp + 0x6);
@@ -1381,8 +1414,9 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
             dx  = *reinterpret_cast<short*>(dest + 0x24);   // CellClass MapCoords
             dy  = *reinterpret_cast<short*>(dest + 0x26);
         }
-        DeployDiagLog("PATH 0x%X TGT(%d,%d) dest=%08X vt=%08X destcell(%d,%d)\n",
-                      R->ECX(), sx, sy, dest, dvt, dx, dy);
+        if (g_DiagVerbose)
+            DeployDiagLog("PATH 0x%X TGT(%d,%d) dest=%08X vt=%08X destcell(%d,%d)\n",
+                          R->ECX(), sx, sy, dest, dvt, dx, dy);
     }
     R->EAX(0x1F9C);          // replicate mov eax,0x1f9c
     return 0x4D3925;
@@ -1418,70 +1452,12 @@ DEFINE_HOOK(58215B, Subzone_SaturateID, 5)   // mov cx,[esp+0x10]
     return 0;   // stride 512: run original
 }
 
-// ------------------------------------------------------------------
-//  Safety net for the full-map cell iterator @0x578290 (the passability/
-//  movement-zone walk fixed by ApplyIteratorStridePatches). The walk terminates
-//  by hitting NULL border cells; if the stride-adjusted geometry ever fails to
-//  land on that null border, the walk would step the slot pointer past the
-//  Cells.Items array and return a GARBAGE cell -> UpdatePassability then writes
-//  through it and corrupts a live object's vtable (observed crash: virtual call
-//  to heap garbage 0x07BF0035, via the coord-transform path). This guard checks
-//  the current slot pointer [Map+0x118] at entry; if it is outside
-//  [Items, Items + MapTotal*4) it returns a NULL cell (EAX=0), which makes the
-//  caller's `while (cell != null)` loop stop cleanly. Jumps to the bare `ret`
-//  at 0x5782D4 (no registers were pushed yet at entry, so no imbalance).
-//  When the geometry is correct this never fires; it only converts a would-be
-//  OOB corruption into a clean, early loop termination. NO-OP at stride 512.
-static int g_IterGuardFires = 0;
-DEFINE_HOOK(578290, CellIterator_OOBGuard, 6)
-{
-    const DWORD map   = R->ECX();
-    const DWORD items = *reinterpret_cast<DWORD*>(map + 0x13C);   // Cells.Items
-    const DWORD cur   = *reinterpret_cast<DWORD*>(map + 0x118);   // current slot ptr
-    if (g_MapStride > 512 && items)
-    {
-        bool stop = (cur < items || cur >= items + static_cast<DWORD>(g_MapTotal) * 4); // slot OOB
-        DWORD cell = 0;
-        if (!stop)
-        {
-            cell = *reinterpret_cast<DWORD*>(cur);   // cell ptr in this slot (slot is in-bounds)
-            // The population loop fills only the iso-diamond of valid cells; the array
-            // corners outside it are never written and hold GARBAGE cell pointers.
-            // Address-range checks fail (real cells can be below 0x10000000), so use
-            // CELL IDENTITY: a real cell at slot N has MapCoords (X@+0x24, Y@+0x26)
-            // equal to N's (X = idx % stride, Y = idx / stride). Garbage won't match.
-            // Stopping at the first mismatch = the valid/garbage boundary = the same
-            // place vanilla's walk terminates on a null border cell.
-            if (cell != 0)
-            {
-                if (cell < 0x00400000 || cell >= 0x40000000)
-                    stop = true;                       // wild ptr: don't even deref it
-                else
-                {
-                    unsigned idx = static_cast<unsigned>((cur - items) / 4);
-                    int ex = static_cast<int>(idx % static_cast<unsigned>(g_MapStride));
-                    int ey = static_cast<int>(idx / static_cast<unsigned>(g_MapStride));
-                    int cx = *reinterpret_cast<short*>(cell + 0x24);
-                    int cy = *reinterpret_cast<short*>(cell + 0x26);
-                    if (cx != ex || cy != ey) stop = true;   // coords don't match slot -> garbage
-                }
-            }
-        }
-        if (stop)
-        {
-            if (g_IterGuardFires < 25)
-            {
-                ++g_IterGuardFires;
-                DeployDiagLog("ITER guard #%d: slot=0x%X cell=0x%X items=0x%X -> stop\n",
-                              g_IterGuardFires, cur, cell, items);
-            }
-            R->EAX(0);           // null cell -> caller's iteration loop stops
-            return 0x5782D4;     // bare `ret`
-        }
-    }
-    R->EAX(*reinterpret_cast<DWORD*>(map + 0x114));   // replicate mov eax,[ecx+0x114]
-    return 0x578296;
-}
+// (CellIterator_OOBGuard @0x578290 REMOVED 2026-08-20: it trampolined EVERY
+// step of every full-map walk (~2M cells/pass at 1000x1000) and profiling put
+// it at ~9%% of main-thread time -- a prime hitch source. Its only real fire
+// ever was its own LAA false positive (the 1000x1000 "south border"). The
+// root causes it guarded against (population stride, iterator geometry) are
+// fixed and dump-verified clean; crash dumps will catch any regression.)
 
 // ============================================================
 //  OVERLAY-DRAW DISPATCH DIAGNOSTIC (stride>512). Two paths read the wall frame:
@@ -1541,34 +1517,6 @@ DEFINE_HOOK(47F96A, OverlayP2_Diag, 6)
     return 0;   // continue (mov cl,[ebx+0x2a8])
 }
 
-// ============================================================
-//  SHARED CELL-LOOKUP CALLER PROBE (stride>512). 0x5657a0 = MapClass::
-//  operator[](CellStruct&) -- EVERY overlay/wall producer funnels its neighbour
-//  resolution through it (EDX=CellStruct* {X@+0, Y@+2}). We hook @0x5657BB
-//  (`mov ecx,[ecx+0x13c]`, 6 bytes) -- reached only after the in-bounds check
-//  passed, so ESI is already popped and [ESP] holds the CALLER return address.
-//  Logging caller + requested (X,Y), gated to the wall build area, reveals which
-//  function computes NAWALL's connection and exactly which neighbour cell it asks
-//  for -- so a wrong N/S request (row-crossing) becomes visible regardless of
-//  which producer it is. EAX here already = the computed cell index.
-// ============================================================
-static int g_WConnFires = 0;
-DEFINE_HOOK(5657BB, CellLookup_CallerProbe, 6)
-{
-    if (g_MapStride > 512 && g_WConnFires < 500)
-    {
-        DWORD esp    = R->ESP();
-        DWORD caller = *reinterpret_cast<DWORD*>(esp);         // return address
-        DWORD cs     = R->EDX();                               // CellStruct*
-        int rx = *reinterpret_cast<short*>(cs + 0);
-        int ry = *reinterpret_cast<short*>(cs + 2);
-        if (rx >= 65 && rx < 90 && ry >= 65 && ry < 115)       // wall build window
-        {
-            DeployDiagLog("LOOK caller=0x%X req(%d,%d) idx=%d\n",
-                          caller, rx, ry, R->EAX<int>());
-            ++g_WConnFires;
-        }
-    }
-    R->ECX(*reinterpret_cast<DWORD*>(R->ECX() + 0x13C));       // replicate mov ecx,[ecx+0x13c]
-    return 0x5657C1;
-}
+// (CellLookup_CallerProbe @0x5657BB REMOVED 2026-08-20: a wall-connect-era
+// diagnostic left sitting on GetCellAt's SUCCESS path -- it taxed every cell
+// lookup in the game since that session; profiling showed it hot at end-game.)

@@ -51,6 +51,7 @@ struct MapSizeConfig
     // [StrideSkipFrom, StrideSkipTo) at 512. Edit via INI, no rebuild per step.
     int StrideSkipFrom;
     int StrideSkipTo;
+    int DiagVerbose;
 
     int Total() const { return Stride * Stride; }
 };
@@ -91,6 +92,11 @@ inline MapSizeConfig ReadConfig()
     cfg.CuratedBase    = GetPrivateProfileIntA("Debug", "CuratedBase",    0, iniPath);
     cfg.StrideSkipFrom = GetPrivateProfileIntA("Debug", "StrideSkipFrom", 0, iniPath);
     cfg.StrideSkipTo   = GetPrivateProfileIntA("Debug", "StrideSkipTo",   0, iniPath);
+    // Per-call trace logging (PATH/ENC/DEC/REVEAL). Each line is an
+    // fopen+append+fclose; thousands fire per minute in big fights = real
+    // lag. Default OFF; rare/load-bearing logs (ITER guard, FACSENT,
+    // one-shot dumps) stay on regardless.
+    cfg.DiagVerbose    = GetPrivateProfileIntA("Debug", "DiagVerbose",    0, iniPath);
 
     // Clamp: never go below the vanilla values.
     if (cfg.Stride       < 512) cfg.Stride       = 512;

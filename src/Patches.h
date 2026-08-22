@@ -60,6 +60,14 @@ int ApplyCoordPatches(FILE* log);
 // their GetModuleHandle base) to match gamemd's stride. NO-OP at 512.
 int ApplyModulePatches(FILE* log);
 
+// The three hottest cell-access sites (0x5656EA/0x565757/0x5657F1), formerly
+// trampoline hooks; now byte patches. Call in BOTH broad and curated modes.
+int ApplyHotAccessorPatches(FILE* log);
+
+// Throttles the every-120-frame full-map shroud/fog consistency sweep
+// (0x578100) by map area -- the periodic ~1s hitch on big maps. NO-OP at 512.
+int ApplyShroudSweepThrottle(FILE* log);
+
 // Antares.dll has its OWN compiled-in stride 512 (YRpp GetCellIndex Y<<9 +
 // MaxCells 0x40000), inlined 73x. Patch its .text like gamemd so Antares-
 // reimplemented features (shroud reveal via MapRevealer, etc.) use stride 1024.

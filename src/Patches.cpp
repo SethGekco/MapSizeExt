@@ -2,6 +2,7 @@
 #include "MapSizeExt.h"
 #include "AresPhobosSites.h"
 #include <windows.h>
+#include <tlhelp32.h>
 #include <string.h>
 
 // ============================================================
@@ -657,7 +658,25 @@ static bool PatchImm32(DWORD immVA, DWORD expect, DWORD nv, FILE* log, const cha
 int ApplyRadarPatches(FILE* log)
 {
     if (g_MapStride == 512) { if (log) fprintf(log, "[radar] surfaces stay 512  [no-op]\n"); return 0; }
-    const DWORD scale = (DWORD)g_MapStride / 512u;   // 2 @1024, 4 @2048
+    DWORD scale = (DWORD)g_MapStride / 512u;         // 2 @1024, 4 @2048
+    // Size by MAP DIMS, not just stride (2026-08-19, the 1000x1000 minimap
+    // right-clip): the radar diamond needs ~(W+H) px of width on the 400-wide
+    // base surface; stride/512 gave 1600 px which fits 700x700 (1400) but
+    // clips 1000x1000 (2000). Read spawnmap.ini like the subzone picker does.
+    {
+        char ini[MAX_PATH];
+        GetModuleFileNameA(nullptr, ini, MAX_PATH);
+        char* s = strrchr(ini, '\\'); if (s) *(s + 1) = '\0';
+        strcat_s(ini, "spawnmap.ini");
+        char buf[64] = { 0 };
+        GetPrivateProfileStringA("Map", "Size", "", buf, sizeof(buf), ini);
+        int mx = 0, my = 0, mw = 0, mh = 0;
+        if (sscanf_s(buf, "%d,%d,%d,%d", &mx, &my, &mw, &mh) == 4 && mw > 0 && mh > 0)
+        {
+            const DWORD need = (DWORD)(mw + mh) / 400u + 1u;   // 700x700 -> 4 (unchanged), 1000x1000 -> 6
+            if (need > scale) scale = need;
+        }
+    }
     const DWORD surfW = 400u * scale;
     const DWORD surfH = 640u * scale;
     const DWORD bytes = surfW * surfH * 2u;          // 0x7D000 * scale^2
@@ -670,7 +689,22 @@ int ApplyRadarPatches(FILE* log)
     n += PatchImm32(0x5FD516 + 2, 0x200,   gate,  log, "radar");  // cmp edi,dim
     n += PatchImm32(0x5FD647 + 2, 0x200,   gate,  log, "radar");  // cmp esi,dim
     n += PatchImm32(0x5FD650 + 2, 0x200,   gate,  log, "radar");  // cmp edi,dim
-    if (log) fprintf(log, "[radar] surface %ux%u (%u bytes), gate %u : %d/7\n",
+    // Radar blit/clip helpers (0x68E8xx-0x6904xx) carry NINE more hardcoded
+    // 400/640 surface-dim immediates. Left unscaled, the radar-EVENT erase
+    // (the spinning under-attack rectangle) clips its restore rect to the
+    // vanilla 400x640 corner of the enlarged surface -> animations outside it
+    // never get erased = permanent "snail trail" patterns (user-observed on
+    // 1000x1000, 2026-08-19). Scale them with the surface.
+    n += PatchImm32(0x68E8B4, 0x280, surfH, log, "radar");   // mov ecx,640
+    n += PatchImm32(0x68EAD8, 0x190, surfW, log, "radar");   // mov edx,400
+    n += PatchImm32(0x68EAE4, 0x280, surfH, log, "radar");   // mov ecx,640
+    n += PatchImm32(0x6901B8, 0x190, surfW, log, "radar");   // push 400 (clip)
+    n += PatchImm32(0x6901BD, 0x280, surfH, log, "radar");   // push 640 (clip)
+    n += PatchImm32(0x6901DF, 0x280, surfH, log, "radar");   // mov [esp+..],640
+    n += PatchImm32(0x6901E7, 0x190, surfW, log, "radar");   // mov [esp+..],400
+    n += PatchImm32(0x690449, 0x190, surfW, log, "radar");   // mov ecx,400
+    n += PatchImm32(0x690460, 0x280, surfH, log, "radar");   // mov edx,640
+    if (log) fprintf(log, "[radar] surface %ux%u (%u bytes), gate %u : %d/16\n",
                      surfW, surfH, bytes, gate, n);
     return n;
 }
@@ -1004,10 +1038,226 @@ static int ApplyPlanningBasePatches(FILE* log)
 //  fix is the counter-CAP hooks in Hooks.cpp (AStar_PoolACap/PoolBCap) which
 //  clamp the node index just below capacity -> a pathological search degrades
 //  (reuses the top slot) instead of corrupting the heap. Nothing to patch here.
+//  v2 (2026-08-19): REAL widening via VirtualAlloc. The 2026-08-18 attempt
+//  failed only because the game CRT allocator cannot serve multi-MB blocks;
+//  the three ctor mallocs are now redirected to VirtualAlloc by hooks
+//  (AStar_Pool{A,B}_VAlloc / AStar_HierPool_VAlloc in Hooks.cpp), and this
+//  function widens everything that encodes the old geometry:
+//    pool A 65,536->262,144 nodes (counter offset 0x100000->0x400000),
+//    pool B 131,072->524,288    (0x180000->0x600000),
+//    open-list heap slots 0x40004->0x100004 bytes / cap 0x10000->0x40000,
+//    hier heap slots 0x9C44->0x4E204 / cap 0x2710->0x13880.
+//  The cap hooks remain as last-resort guards at the new ceilings. Profiling
+//  motive: cap-hits made big searches fail -> per-frame re-path storms
+//  (stutter) + zigzag detours. NO-OP at stride 512 (hooks return 0 there).
 int ApplyAStarPoolPatches(FILE* log)
 {
-    if (log) fprintf(log, "[astar]   overflow guard active via cap hooks (no widening)\n");
-    return 0;
+    if (g_MapStride <= 512)
+    {
+        if (log) fprintf(log, "[astar]   pools stay vanilla (stride %d)\n", g_MapStride);
+        return 0;
+    }
+    int n = 0;
+    // pool A counter offset imm32s (0x100000 -> 0x400000)
+    n += PatchImm32(0x42A47B, 0x100000, 0x400000, nullptr, "astar");
+    n += PatchImm32(0x42A5C5, 0x100000, 0x400000, nullptr, "astar");
+    n += PatchImm32(0x42A80C, 0x100000, 0x400000, nullptr, "astar");
+    n += PatchImm32(0x42A842, 0x100000, 0x400000, nullptr, "astar");
+    // pool A ctor init-loop node count (0x10000 -> 0x40000)
+    n += PatchImm32(0x42A7F8, 0x10000, 0x40000, nullptr, "astar");
+    // pool B counter offset imm32s (0x180000 -> 0x600000)
+    n += PatchImm32(0x42A48E, 0x180000, 0x600000, nullptr, "astar");
+    n += PatchImm32(0x42A5BB, 0x180000, 0x600000, nullptr, "astar");
+    n += PatchImm32(0x42A82A, 0x180000, 0x600000, nullptr, "astar");
+    n += PatchImm32(0x42A837, 0x180000, 0x600000, nullptr, "astar");
+    // open-list heap: slots buffer bytes + capacity (game malloc handles 1 MB)
+    n += PatchImm32(0x42A750, 0x40004, 0x100004, nullptr, "astar");
+    n += PatchImm32(0x42A763, 0x10000, 0x40000, nullptr, "astar");
+    // hier heap: slots buffer bytes + capacity
+    n += PatchImm32(0x42A7A2, 0x9C44, 0x4E204, nullptr, "astar");
+    n += PatchImm32(0x42A7B5, 0x2710, 0x13880, nullptr, "astar");
+    if (log) fprintf(log, "[astar]   pools widened 4x via VirtualAlloc (A 256K, B 512K, hier 80K nodes) : %d/13 sites\n", n);
+    return n;
+}
+
+// The three hottest cell-access sites, formerly Phase-1 TRAMPOLINE hooks
+// (Syringe dispatch on per-cell paths = the top non-idle CPU bucket in the
+// 2026-08-19 stutter profile). Now plain byte patches:
+//   0x5656EA  operator[](Cell&): shl eax,9 -> log2(stride); its bound
+//             cmp eax,0x40000 @0x5656F1 is covered by the broad sweep, but
+//             patch it here too (verify-skip if already done) for curated mode.
+//   0x565757  operator[](lepton): shl edx,9; bound is DYNAMIC ([ecx+0x140]).
+//   0x5657F1  IsCellValid: shl edx,9; no immediate bound.
+// Curated mode's table already rewrites 0x565757/0x5657F1 to 0x0A first;
+// the expect-0x09 verify makes those skips harmless.
+//  PERIODIC FULL-MAP SHROUD SWEEP THROTTLE  (the "runs fine then pauses for a
+//  second" hitch, profiled 2026-08-20).
+//  The main loop @0x55B2A6 runs `if (frame % 120 == 0) sub_578100()`, and that
+//  function does TWO complete walks of the cell diamond: (1) redraw cells
+//  flagged 0x20, (2) for EVERY cell recompute its shroud/fog tile index via
+//  0x6D8700 (the 0x6D8640 family -- which samples 8 neighbours through
+//  GetCellAt) and mark it dirty when it changed. Cost is O(map area) x ~8 cell
+//  lookups: ~640K lookups on a vanilla 200x200 (invisible) but ~16 MILLION on
+//  1000x1000 -- a ~1 s freeze every 120 frames. It is a consistency sweep;
+//  interactive shroud still updates through the normal incremental reveal
+//  path, so running it less often on big maps costs only how quickly a missed
+//  fog edge is caught up.
+//  Fix: scale the 120-frame period with map area (1x at vanilla sizes -> 8x at
+//  1000x1000), so the hitch keeps its size but becomes rare. NO-OP at stride
+//  512, and unchanged for maps that are not actually big.
+int ApplyShroudSweepThrottle(FILE* log)
+{
+    if (g_MapStride <= 512)
+    {
+        if (log) fprintf(log, "[sweep]   full-map shroud sweep unchanged (stride %d)\n", g_MapStride);
+        return 0;
+    }
+    char ini[MAX_PATH];
+    GetModuleFileNameA(nullptr, ini, MAX_PATH);
+    char* s = strrchr(ini, '\\'); if (s) *(s + 1) = '\0';
+    strcat_s(ini, "spawnmap.ini");
+    char buf[64] = { 0 };
+    GetPrivateProfileStringA("Map", "Size", "", buf, sizeof(buf), ini);
+    int mx = 0, my = 0, mw = 0, mh = 0;
+    int factor = 4;                                   // unknown size -> middle ground
+    if (sscanf_s(buf, "%d,%d,%d,%d", &mx, &my, &mw, &mh) == 4 && mw > 0 && mh > 0)
+    {
+        const int cells = (2 * mw - 1) * mh;           // iso diamond area
+        factor = cells / 200000;                       // ~200x200 vanilla = 1
+        if (factor < 1) factor = 1;
+        if (factor > 8) factor = 8;                    // cap: >8x delays fog catch-up too long
+    }
+    const DWORD period = 120u * (DWORD)factor;
+    const int n = PatchImm32(0x55B29D, 0x78, period, nullptr, "sweep");
+    if (log) fprintf(log, "[sweep]   full-map shroud sweep every %u frames (was 120, map %dx%d) : %d/1\n",
+                     period, mw, mh, n);
+    return n;
+}
+
+int ApplyHotAccessorPatches(FILE* log)
+{
+    const int shift = Log2Exact(g_MapStride);
+    if (shift < 0 || shift == 9)
+    {
+        if (log) fprintf(log, "[hotacc]  accessors stay x512  [no-op]\n");
+        return 0;
+    }
+    int n = 0;
+    n += PatchShiftC1(0x5656EA, static_cast<BYTE>(shift));
+    n += PatchShiftC1(0x565757, static_cast<BYTE>(shift));
+    n += PatchShiftC1(0x5657F1, static_cast<BYTE>(shift));
+    n += PatchImm32(0x5656F1 + 1, 0x40000, (DWORD)g_MapTotal, nullptr, "hotacc");
+    if (log) fprintf(log, "[hotacc]  hot cell accessors byte-patched (were trampoline hooks) : %d/4\n", n);
+    return n;
+}
+
+
+// ============================================================
+//  GENERIC co-loaded-DLL cell-index scanner  (the "spawns in the top-right /
+//  off-map" bug class).
+//
+//  EVERY Syringe DLL built on YRpp compiles MapClass::GetCellAt/TryGetCellAt
+//  INLINE as   (Y<<9)+X ; cmp idx,0x3FFFF ; Cells.Items[idx]  -- i.e. each DLL
+//  carries its own private copy of the stride-512 grid. At a wider stride those
+//  lookups fold to a completely different cell, and objects materialise far
+//  from where the DLL asked for them (Phobos ore-spawn Y-halving 2026-08-11;
+//  GiftBoxHost Host.RandomRange scatter putting GIs in the top-right corner
+//  2026-08-21). The hardcoded per-DLL tables (kAresShl/kPhobosShl) only ever
+//  covered the frameworks, and the Phobos-only scanner recognised just ONE of
+//  the two Cells.Items idioms -- so any newly built extension DLL reintroduces
+//  the bug silently.
+//
+//  This scans the .text of EVERY module loaded from the GAME DIRECTORY, so a
+//  DLL written next week is covered without touching MapSizeExt. Both Items
+//  forms are accepted:
+//      [reg+0x13C]   MapClass field  (Phobos)
+//      ds:0x87F924   absolute MapClass::Instance+0x13C (GiftBoxHost)
+//  Sites already rewritten by the hardcoded tables carry shift != 9 and are
+//  skipped, so nothing is patched twice. Requiring all three parts is what
+//  keeps non-cell `shl reg,9` untouched -- patching those blindly broke
+//  pathfinding once, and that lesson is baked into this signature.
+static int ScanModuleCellIndex(HMODULE h, const char* name, int shift, DWORD total, FILE* log)
+{
+    BYTE* base = reinterpret_cast<BYTE*>(h);
+    if (!base || *reinterpret_cast<WORD*>(base) != 0x5A4D) return 0;      // 'MZ'
+    BYTE* nt = base + *reinterpret_cast<DWORD*>(base + 0x3C);
+    if (*reinterpret_cast<DWORD*>(nt) != 0x00004550) return 0;            // 'PE\0\0'
+    const int nsec = *reinterpret_cast<WORD*>(nt + 6);
+    BYTE* sec = nt + 0x18 + *reinterpret_cast<WORD*>(nt + 0x14);
+    BYTE* t0 = nullptr; BYTE* t1 = nullptr;
+    for (int i = 0; i < nsec; ++i)
+    {
+        BYTE* sc = sec + i * 40;
+        if (memcmp(sc, ".text", 5) == 0)
+        {
+            t0 = base + *reinterpret_cast<DWORD*>(sc + 12);               // VirtualAddress
+            t1 = t0 + *reinterpret_cast<DWORD*>(sc + 8);                  // VirtualSize
+            break;
+        }
+    }
+    if (!t0 || t1 <= t0) return 0;
+
+    int n = 0;
+    for (BYTE* p = t0; p + 48 < t1; ++p)
+    {
+        if (p[0] != 0xC1 || p[1] < 0xE0 || p[1] > 0xE7 || p[2] != 0x09) continue;   // shl reg,9 (unpatched only)
+        BYTE* bnd = nullptr;                                              // cmp idx,0x3FFFF within 20 bytes
+        for (BYTE* q = p + 3; q < p + 23; ++q)
+            if (q[0]==0xFF && q[1]==0xFF && q[2]==0x03 && q[3]==0x00) { bnd = q; break; }
+        if (!bnd) continue;
+        bool cells = false;                                               // Cells.Items, either idiom
+        for (BYTE* q = bnd; q + 4 < p + 48; ++q)
+        {
+            if (q[0]==0x3C && q[1]==0x01 && q[2]==0x00 && q[3]==0x00) { cells = true; break; }  // [reg+0x13C]
+            if (q[0]==0x24 && q[1]==0xF9 && q[2]==0x87 && q[3]==0x00) { cells = true; break; }  // ds:0x87F924
+        }
+        if (!cells) continue;
+        const int did = PatchShiftC1(reinterpret_cast<DWORD>(p), static_cast<BYTE>(shift));
+        PatchImm32(reinterpret_cast<DWORD>(bnd), 0, 0x3FFFF, total - 1);
+        if (did && log)
+            fprintf(log, "[dll]   %s +0x%X: inline GetCellIndex -> stride %d\n",
+                    name, static_cast<DWORD>(p - base), g_MapStride);
+        n += did;
+    }
+    return n;
+}
+
+// Scans every module loaded from the game directory (skipping gamemd itself and
+// this DLL). Returns total sites patched.
+static int ApplyAllModuleCellScans(int shift, DWORD total, FILE* log)
+{
+    char dir[MAX_PATH];
+    GetModuleFileNameA(nullptr, dir, MAX_PATH);
+    char* s = strrchr(dir, '\\');
+    if (!s) return 0;
+    *(s + 1) = '\0';
+    const size_t dlen = strlen(dir);
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+    {
+        if (log) fprintf(log, "[dll] module snapshot failed -> generic cell scan skipped\n");
+        return 0;
+    }
+    MODULEENTRY32 me;
+    me.dwSize = sizeof(me);
+    const HMODULE self = GetModuleHandleA("MapSizeExt.dll");
+    const HMODULE exe  = GetModuleHandleA(nullptr);
+    int grand = 0, mods = 0;
+    if (Module32First(snap, &me))
+    {
+        do
+        {
+            if (me.hModule == self || me.hModule == exe) continue;
+            if (_strnicmp(me.szExePath, dir, dlen) != 0) continue;         // game dir only
+            const int n = ScanModuleCellIndex(me.hModule, me.szModule, shift, total, log);
+            if (n) ++mods;
+            grand += n;
+        } while (Module32Next(snap, &me));
+    }
+    CloseHandle(snap);
+    if (log) fprintf(log, "[dll] generic cell-index scan: %d site(s) across %d game DLL(s)\n", grand, mods);
+    return grand;
 }
 
 int ApplyModulePatches(FILE* log)
@@ -1062,7 +1312,8 @@ int ApplyModulePatches(FILE* log)
                          M.name, base, ns, M.nshl, nc, M.ncmp, na, M.nand, nr, M.nsar);
         grand += ns + nc + na + nr;
     }
-    grand += ApplyPhobosCellIndexScan(shift, total, log);   // ore spawner + 12 other newer GetCellIndex sites
+    grand += ApplyPhobosCellIndexScan(shift, total, log);
+    grand += ApplyAllModuleCellScans(shift, total, log);   // any co-loaded DLL (GiftBoxHost etc.)   // ore spawner + 12 other newer GetCellIndex sites
     grand += ApplyPhobosWaypointCoordBase(shift, total, log);  // the 2048 spawn fix (per-map base from spawnmap.ini)
     grand += ApplyPlanningBasePatches(log);                     // planning-order pack-base args (g_CoordBase set above)
     return grand;
