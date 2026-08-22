@@ -2,6 +2,7 @@
 #include "MapSizeExt.h"
 #include "AresPhobosSites.h"
 #include <windows.h>
+#include <tlhelp32.h>
 #include <string.h>
 
 // ============================================================
@@ -1150,6 +1151,115 @@ int ApplyHotAccessorPatches(FILE* log)
     return n;
 }
 
+
+// ============================================================
+//  GENERIC co-loaded-DLL cell-index scanner  (the "spawns in the top-right /
+//  off-map" bug class).
+//
+//  EVERY Syringe DLL built on YRpp compiles MapClass::GetCellAt/TryGetCellAt
+//  INLINE as   (Y<<9)+X ; cmp idx,0x3FFFF ; Cells.Items[idx]  -- i.e. each DLL
+//  carries its own private copy of the stride-512 grid. At a wider stride those
+//  lookups fold to a completely different cell, and objects materialise far
+//  from where the DLL asked for them (Phobos ore-spawn Y-halving 2026-08-11;
+//  GiftBoxHost Host.RandomRange scatter putting GIs in the top-right corner
+//  2026-08-21). The hardcoded per-DLL tables (kAresShl/kPhobosShl) only ever
+//  covered the frameworks, and the Phobos-only scanner recognised just ONE of
+//  the two Cells.Items idioms -- so any newly built extension DLL reintroduces
+//  the bug silently.
+//
+//  This scans the .text of EVERY module loaded from the GAME DIRECTORY, so a
+//  DLL written next week is covered without touching MapSizeExt. Both Items
+//  forms are accepted:
+//      [reg+0x13C]   MapClass field  (Phobos)
+//      ds:0x87F924   absolute MapClass::Instance+0x13C (GiftBoxHost)
+//  Sites already rewritten by the hardcoded tables carry shift != 9 and are
+//  skipped, so nothing is patched twice. Requiring all three parts is what
+//  keeps non-cell `shl reg,9` untouched -- patching those blindly broke
+//  pathfinding once, and that lesson is baked into this signature.
+static int ScanModuleCellIndex(HMODULE h, const char* name, int shift, DWORD total, FILE* log)
+{
+    BYTE* base = reinterpret_cast<BYTE*>(h);
+    if (!base || *reinterpret_cast<WORD*>(base) != 0x5A4D) return 0;      // 'MZ'
+    BYTE* nt = base + *reinterpret_cast<DWORD*>(base + 0x3C);
+    if (*reinterpret_cast<DWORD*>(nt) != 0x00004550) return 0;            // 'PE\0\0'
+    const int nsec = *reinterpret_cast<WORD*>(nt + 6);
+    BYTE* sec = nt + 0x18 + *reinterpret_cast<WORD*>(nt + 0x14);
+    BYTE* t0 = nullptr; BYTE* t1 = nullptr;
+    for (int i = 0; i < nsec; ++i)
+    {
+        BYTE* sc = sec + i * 40;
+        if (memcmp(sc, ".text", 5) == 0)
+        {
+            t0 = base + *reinterpret_cast<DWORD*>(sc + 12);               // VirtualAddress
+            t1 = t0 + *reinterpret_cast<DWORD*>(sc + 8);                  // VirtualSize
+            break;
+        }
+    }
+    if (!t0 || t1 <= t0) return 0;
+
+    int n = 0;
+    for (BYTE* p = t0; p + 48 < t1; ++p)
+    {
+        if (p[0] != 0xC1 || p[1] < 0xE0 || p[1] > 0xE7 || p[2] != 0x09) continue;   // shl reg,9 (unpatched only)
+        BYTE* bnd = nullptr;                                              // cmp idx,0x3FFFF within 20 bytes
+        for (BYTE* q = p + 3; q < p + 23; ++q)
+            if (q[0]==0xFF && q[1]==0xFF && q[2]==0x03 && q[3]==0x00) { bnd = q; break; }
+        if (!bnd) continue;
+        bool cells = false;                                               // Cells.Items, either idiom
+        for (BYTE* q = bnd; q + 4 < p + 48; ++q)
+        {
+            if (q[0]==0x3C && q[1]==0x01 && q[2]==0x00 && q[3]==0x00) { cells = true; break; }  // [reg+0x13C]
+            if (q[0]==0x24 && q[1]==0xF9 && q[2]==0x87 && q[3]==0x00) { cells = true; break; }  // ds:0x87F924
+        }
+        if (!cells) continue;
+        const int did = PatchShiftC1(reinterpret_cast<DWORD>(p), static_cast<BYTE>(shift));
+        PatchImm32(reinterpret_cast<DWORD>(bnd), 0, 0x3FFFF, total - 1);
+        if (did && log)
+            fprintf(log, "[dll]   %s +0x%X: inline GetCellIndex -> stride %d\n",
+                    name, static_cast<DWORD>(p - base), g_MapStride);
+        n += did;
+    }
+    return n;
+}
+
+// Scans every module loaded from the game directory (skipping gamemd itself and
+// this DLL). Returns total sites patched.
+static int ApplyAllModuleCellScans(int shift, DWORD total, FILE* log)
+{
+    char dir[MAX_PATH];
+    GetModuleFileNameA(nullptr, dir, MAX_PATH);
+    char* s = strrchr(dir, '\\');
+    if (!s) return 0;
+    *(s + 1) = '\0';
+    const size_t dlen = strlen(dir);
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+    {
+        if (log) fprintf(log, "[dll] module snapshot failed -> generic cell scan skipped\n");
+        return 0;
+    }
+    MODULEENTRY32 me;
+    me.dwSize = sizeof(me);
+    const HMODULE self = GetModuleHandleA("MapSizeExt.dll");
+    const HMODULE exe  = GetModuleHandleA(nullptr);
+    int grand = 0, mods = 0;
+    if (Module32First(snap, &me))
+    {
+        do
+        {
+            if (me.hModule == self || me.hModule == exe) continue;
+            if (_strnicmp(me.szExePath, dir, dlen) != 0) continue;         // game dir only
+            const int n = ScanModuleCellIndex(me.hModule, me.szModule, shift, total, log);
+            if (n) ++mods;
+            grand += n;
+        } while (Module32Next(snap, &me));
+    }
+    CloseHandle(snap);
+    if (log) fprintf(log, "[dll] generic cell-index scan: %d site(s) across %d game DLL(s)\n", grand, mods);
+    return grand;
+}
+
 int ApplyModulePatches(FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);
@@ -1202,7 +1312,8 @@ int ApplyModulePatches(FILE* log)
                          M.name, base, ns, M.nshl, nc, M.ncmp, na, M.nand, nr, M.nsar);
         grand += ns + nc + na + nr;
     }
-    grand += ApplyPhobosCellIndexScan(shift, total, log);   // ore spawner + 12 other newer GetCellIndex sites
+    grand += ApplyPhobosCellIndexScan(shift, total, log);
+    grand += ApplyAllModuleCellScans(shift, total, log);   // any co-loaded DLL (GiftBoxHost etc.)   // ore spawner + 12 other newer GetCellIndex sites
     grand += ApplyPhobosWaypointCoordBase(shift, total, log);  // the 2048 spawn fix (per-map base from spawnmap.ini)
     grand += ApplyPlanningBasePatches(log);                     // planning-order pack-base args (g_CoordBase set above)
     return grand;
