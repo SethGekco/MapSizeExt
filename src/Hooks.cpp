@@ -1,5 +1,6 @@
 #include "MapSizeExt.h"
 #include "Config.h"
+#include "Patches.h"
 #include <Syringe.h>
 #include <windows.h>
 #include <cstdio>
@@ -944,6 +945,36 @@ DEFINE_HOOK(42A482, AStar_PoolBCap, 6)
     if (cnt > 0x7FFFE) cnt = 0x7FFFE;
     R->EDX(cnt);
     return 0x42A488;                      // resume after the replaced mov
+}
+
+
+// ------------------------------------------------------------------
+//  LATE co-loaded-DLL cell-index scan  @ WinMain (0x6BB9A0, 5 bytes:
+//  push ebp / mov ebp,esp / push -1).
+//  Our DllMain runs while Syringe is still injecting: any DLL listed after
+//  MapSizeExt on the -i= line does not exist yet, so the init-time scan misses
+//  it entirely (GiftBoxHost's Host.RandomRange kept placing units in the
+//  top-right corner because its two inlined GetCellIndex sites stayed x512).
+//  By WinMain every injected DLL is loaded, so re-run the scan once here.
+//  Idempotent (already-patched sites no longer read shl 9) and stride-gated.
+DEFINE_HOOK(6BB9A0, MapSizeExt_LateDllScan, 5)
+{
+    static bool done = false;
+    if (!done && g_MapStride > 512)
+    {
+        done = true;
+        char path[MAX_PATH];
+        GetModuleFileNameA(nullptr, path, MAX_PATH);
+        char* s = strrchr(path, '\\');
+        if (s) *(s + 1) = '\0';
+        strcat_s(path, "MapSizeExt.log");
+        FILE* f = nullptr;
+        fopen_s(&f, path, "a");
+        if (f) fprintf(f, "[dll] LATE scan at WinMain (covers DLLs injected after MapSizeExt):\n");
+        ApplyLateModuleCellScan(f);
+        if (f) fclose(f);
+    }
+    return 0;                       // continue into WinMain normally
 }
 
 // ------------------------------------------------------------------

@@ -1260,6 +1260,21 @@ static int ApplyAllModuleCellScans(int shift, DWORD total, FILE* log)
     return grand;
 }
 
+// Syringe injects DLLs in the -i= command-line order, so every extension DLL
+// listed AFTER MapSizeExt (GiftBoxHost, TraitExt, ...) is simply NOT LOADED when
+// our DllMain runs -- the init-time scan cannot see it, and its inlined
+// stride-512 cell math survives. Proven 2026-08-21: the init scan logged
+// "72 site(s) across 1 game DLL(s)" (Antares only) while GiftBoxHost kept
+// spawning units in the top-right corner. This re-runs the scan once from
+// WinMain, by which point Syringe has loaded every injected DLL. Sites the init
+// pass already patched carry shift != 9 and are skipped, so it is idempotent.
+int ApplyLateModuleCellScan(FILE* log)
+{
+    const int shift = Log2Exact(g_MapStride);
+    if (shift < 0 || shift == 9) return 0;              // stride 512 -> nothing to do
+    return ApplyAllModuleCellScans(shift, static_cast<DWORD>(g_MapTotal), log);
+}
+
 int ApplyModulePatches(FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);

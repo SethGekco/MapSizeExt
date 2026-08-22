@@ -60,6 +60,10 @@ int ApplyCoordPatches(FILE* log);
 // their GetModuleHandle base) to match gamemd's stride. NO-OP at 512.
 int ApplyModulePatches(FILE* log);
 
+// Re-runs the generic co-loaded-DLL cell-index scan from WinMain, so DLLs that
+// Syringe injects AFTER MapSizeExt are covered too. Idempotent; no-op at 512.
+int ApplyLateModuleCellScan(FILE* log);
+
 // The three hottest cell-access sites (0x5656EA/0x565757/0x5657F1), formerly
 // trampoline hooks; now byte patches. Call in BOTH broad and curated modes.
 int ApplyHotAccessorPatches(FILE* log);
