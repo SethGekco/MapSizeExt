@@ -80,6 +80,7 @@ static void ApplyInit()
             ApplyCuratedBase(f);
             ApplyHotAccessorPatches(f);
             ApplyShroudSweepThrottle(f);
+            ApplyAntaresIniParseFix(f, cfg.AntaresIniFix);
             // His base handles Antares's stride-512 MapRevealer via his accessor
             // hook (not yet ported); until then we still need OUR Antares/Phobos
             // module patches or the shroud reveals in stripes (BUG-ATLAS 2.11).
@@ -94,6 +95,7 @@ static void ApplyInit()
         if (cfg.PatchStride)  ApplyStridePatches(f); else fprintf(f, "[stride]  DISABLED via INI\n");
         if (cfg.PatchStride)  ApplyHotAccessorPatches(f);
         ApplyShroudSweepThrottle(f);
+        ApplyAntaresIniParseFix(f, cfg.AntaresIniFix);
         if (cfg.PatchStride)  ApplyCellArrayPopulationStride(f); else fprintf(f, "[cellpop] DISABLED via INI\n");
         if (cfg.PatchBounds)  ApplyBoundsPatches(f, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0); else fprintf(f, "[bounds]  DISABLED via INI\n");
         if (cfg.PatchBounds)  ApplyOccupancyBoundPatches(f); else fprintf(f, "[occ]     DISABLED via INI\n");
@@ -118,6 +120,7 @@ static void ApplyInit()
             ApplyCuratedBase(nullptr);
             ApplyHotAccessorPatches(nullptr);
             ApplyShroudSweepThrottle(nullptr);
+            ApplyAntaresIniParseFix(nullptr, cfg.AntaresIniFix);
             ApplyModulePatches(nullptr);
             ApplyAntaresPatches(nullptr);
         }
@@ -126,6 +129,7 @@ static void ApplyInit()
         if (cfg.PatchStride)  ApplyStridePatches(nullptr);
         if (cfg.PatchStride)  ApplyHotAccessorPatches(nullptr);
         ApplyShroudSweepThrottle(nullptr);
+        ApplyAntaresIniParseFix(nullptr, cfg.AntaresIniFix);
         if (cfg.PatchStride)  ApplyCellArrayPopulationStride(nullptr);
         if (cfg.PatchBounds)  ApplyBoundsPatches(nullptr, cfg.PatchBoundsCmp != 0, cfg.PatchRootWH != 0);
         if (cfg.PatchBounds)  ApplyOccupancyBoundPatches(nullptr);

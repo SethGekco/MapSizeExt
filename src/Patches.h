@@ -64,6 +64,11 @@ int ApplyModulePatches(FILE* log);
 // Syringe injects AFTER MapSizeExt are covered too. Idempotent; no-op at 512.
 int ApplyLateModuleCellScan(FILE* log);
 
+// Neuters Antares's duplicate-key INI parse hook on BIG maps only: it re-sorts
+// the section index per parsed line (O(N^2 log N)) and costs minutes on a
+// 155k-line map. [Debug] AntaresIniFix=0 to force stock behaviour.
+int ApplyAntaresIniParseFix(FILE* log, int enable);
+
 // The three hottest cell-access sites (0x5656EA/0x565757/0x5657F1), formerly
 // trampoline hooks; now byte patches. Call in BOTH broad and curated modes.
 int ApplyHotAccessorPatches(FILE* log);

@@ -1275,6 +1275,80 @@ int ApplyLateModuleCellScan(FILE* log)
     return ApplyAllModuleCellScans(shift, static_cast<DWORD>(g_MapTotal), log);
 }
 
+
+// ============================================================
+//  ANTARES INI-INDEX QUADRATIC PARSE FIX  (the 1000x1000 ten-minute load).
+//
+//  Profiled 2026-08-31: during the black screen the process is pinned at ~102%
+//  of one core, RSS flat, zero I/O -- every stack sample lands in Antares.dll
+//  +0x77BC2..0x7805E, which its PDB resolves to
+//      std::_Sort_unchecked< IndexNode*, FetchNode::<lambda_1> >
+//      src/Misc/IniIndex.cpp:61
+//  Antares hooks the INI parser (INIClass_Parse_Override @gamemd 0x5260D9) and
+//  calls FetchNode for EVERY parsed line to drop a duplicate key. FetchNode
+//  re-sorts the whole section index whenever IsSorted is false -- which the
+//  previous line's insertion just cleared. So a section of N entries costs a
+//  full sort per line: O(N^2 log N).
+//  A generated big map is one enormous [IsoMapPack5] section: the 1000x1000
+//  map is 155,039 lines vs 76,122 for 700x700, so the cost roughly quadruples
+//  with area (and the index outgrows cache on top) -- minutes of pure sorting
+//  before the loading screen ever appears.
+//
+//  Fix: neuter that one hook (its first bytes -> xor eax,eax / ret, i.e. the
+//  Syringe "continue normally" return; the export is __cdecl so a bare ret is
+//  correct). What is lost is only Antares's duplicate-key override: if a
+//  section lists the same key twice, the stale entry is no longer deleted.
+//  Generated map files never do that, so we enable this ONLY for big maps and
+//  leave normal-size games on stock Antares behaviour. [Debug] AntaresIniFix=0
+//  forces it off.
+int ApplyAntaresIniParseFix(FILE* log, int enable)
+{
+    if (!enable)
+    {
+        if (log) fprintf(log, "[antares-ini] disabled via INI\n");
+        return 0;
+    }
+    char ini[MAX_PATH];
+    GetModuleFileNameA(nullptr, ini, MAX_PATH);
+    char* s = strrchr(ini, '\\'); if (s) *(s + 1) = '\0';
+    strcat_s(ini, "spawnmap.ini");
+    char buf[64] = { 0 };
+    GetPrivateProfileStringA("Map", "Size", "", buf, sizeof(buf), ini);
+    int mx = 0, my = 0, mw = 0, mh = 0;
+    if (sscanf_s(buf, "%d,%d,%d,%d", &mx, &my, &mw, &mh) != 4 || mw <= 0 || mh <= 0)
+    {
+        if (log) fprintf(log, "[antares-ini] map size unknown -> left stock\n");
+        return 0;
+    }
+    const int cells = (2 * mw - 1) * mh;                 // iso diamond area
+    if (cells <= 500000)                                 // ~500x500 and below: stock
+    {
+        if (log) fprintf(log, "[antares-ini] map %dx%d small enough -> stock Antares parse\n", mw, mh);
+        return 0;
+    }
+    HMODULE h = GetModuleHandleA("Antares.dll");
+    if (!h)
+    {
+        if (log) fprintf(log, "[antares-ini] Antares.dll not loaded -> skip\n");
+        return 0;
+    }
+    BYTE* fn = reinterpret_cast<BYTE*>(h) + 0x782F0;     // INIClass_Parse_Override export
+    const BYTE expect[3] = { 0x8B, 0x44, 0x24 };         // mov eax,[esp+4]
+    if (memcmp(fn, expect, 3) != 0)
+    {
+        if (log) fprintf(log, "[antares-ini] entry bytes differ (other Antares build) -> skip\n");
+        return 0;
+    }
+    const BYTE stub[3] = { 0x31, 0xC0, 0xC3 };           // xor eax,eax ; ret  (__cdecl)
+    DWORD old = 0;
+    if (!VirtualProtect(fn, 3, PAGE_EXECUTE_READWRITE, &old)) return 0;
+    memcpy(fn, stub, 3);
+    VirtualProtect(fn, 3, old, &old);
+    if (log) fprintf(log, "[antares-ini] map %dx%d (%d cells): Antares duplicate-key parse hook neutered "
+                          "(O(N^2 log N) INI sort) -> fast map load\n", mw, mh, cells);
+    return 1;
+}
+
 int ApplyModulePatches(FILE* log)
 {
     const int shift = Log2Exact(g_MapStride);

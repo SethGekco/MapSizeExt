@@ -52,6 +52,7 @@ struct MapSizeConfig
     int StrideSkipFrom;
     int StrideSkipTo;
     int DiagVerbose;
+    int AntaresIniFix;
 
     int Total() const { return Stride * Stride; }
 };
@@ -97,6 +98,9 @@ inline MapSizeConfig ReadConfig()
     // lag. Default OFF; rare/load-bearing logs (ITER guard, FACSENT,
     // one-shot dumps) stay on regardless.
     cfg.DiagVerbose    = GetPrivateProfileIntA("Debug", "DiagVerbose",    0, iniPath);
+    // Antares re-sorts its INI index once per parsed line -> big maps spend
+    // minutes sorting before the loading screen. Default on (big maps only).
+    cfg.AntaresIniFix  = GetPrivateProfileIntA("Debug", "AntaresIniFix",  1, iniPath);
 
     // Clamp: never go below the vanilla values.
     if (cfg.Stride       < 512) cfg.Stride       = 512;
