@@ -17,6 +17,14 @@ jobs:
       with:
         submodules: recursive
 
+    - name: Check Syringe hooks
+      shell: bash
+      run: |
+        curl -sSfL -o hooks.csv \
+          https://raw.githubusercontent.com/SethGekco/YR-Hook-Encyclopedia/main/registry/hooks.csv
+        python3 tools/check_hook_overlap.py hooks.csv src
+        python3 tools/check_hook_bounds.py --registry hooks.csv src
+
     - name: Setup MSBuild
       uses: microsoft/setup-msbuild@v2
 

@@ -821,7 +821,15 @@ DEFINE_HOOK(567F34, RevealArea2_ShroudWrite_Diag, 6)
 //  no stack args (ret c3), so redirect to a bare `ret` (0x66053A) to
 //  return to the caller with a balanced stack. eax=0 as a safe result.
 // ============================================================
-DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 5)
+// Size 7, not 5. Syringe resumes at addr+max(size,5) and 0x660545 is inside
+// `lea eax,[esp+0x48]` (0x660543, 4 bytes). 7 covers `sub esp,0x68` + that
+// `lea`, resuming at 0x660547 (`push ebx`).
+//
+// This mattered: the stride-512 path below returns 0, so the stub replayed a
+// truncated `lea` and then ran into its own jump bytes. Only the stride>512
+// path (which returns 0x66053A) was safe -- i.e. it was broken for exactly the
+// normal-sized maps this DLL is supposed to leave alone.
+DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 7)
 {
     // The function derefs ds:0x880A04 as `mov ecx,[0x880A04]; mov esi,[ecx];
     // call [esi+0x78]`. At stride 1024 that singleton is a NON-object (observed a
