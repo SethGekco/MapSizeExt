@@ -948,6 +948,63 @@ DEFINE_HOOK(42A482, AStar_PoolBCap, 6)
 }
 
 
+
+// ------------------------------------------------------------------
+//  INI SECTION ENTRY-BY-INDEX MEMO  @0x5270C5 (5 bytes:
+//  mov eax,[eax+0x18] ; cmp eax,ebx).
+//
+//  Second half of the 1000x1000 load stall. With Antares's INI sort neutered,
+//  the profile moved into gamemd itself: 45 of 64 samples at 0x5270CF, the
+//  `cmp ecx,ebx` of a LINKED-LIST WALK inside sub_526E80 (reached from the
+//  IsoMapPack5 read path @0x4AD9EE). That function fetches section entry #0,
+//  #1, #2 ... and each fetch restarts from the list head, walking `index`
+//  nodes -- O(N^2) over the ~100k numbered lines of a big map's [IsoMapPack5].
+//
+//  Enumeration is strictly sequential, so one memo turns it into O(1) per
+//  fetch: remember (section, index, node) and, when the next call asks for
+//  index+1 on the same section, start from the remembered node's successor.
+//  The walk's own guards are preserved exactly -- we replicate them while
+//  walking (each step needs next != null and [node+8] != null) and hand the
+//  found node back at the loop TOP with ESI = 0, so the original code still
+//  performs its final checks and its `mov eax,[eax+0xc]` result fetch. On any
+//  mismatch we fall back to a full walk from the head, so behaviour is
+//  identical to vanilla in every case. ESI is dead after this block (it is
+//  reloaded with 0x818A0C at 0x5270F0), so clobbering it is safe.
+DEFINE_HOOK(5270C5, INI_SectionEntryByIndex_Memo, 5)
+{
+    const DWORD section = R->EAX();
+    const int   idx     = R->ESI<int>();
+    static DWORD cSection = 0;
+    static int   cIdx     = -1;
+    static DWORD cNode    = 0;
+
+    auto valid = [](DWORD n) -> bool {
+        return n && *reinterpret_cast<DWORD*>(n + 4) && *reinterpret_cast<DWORD*>(n + 8);
+    };
+
+    DWORD node = 0;
+    if (section && section == cSection && idx == cIdx + 1 && valid(cNode))
+    {
+        node = *reinterpret_cast<DWORD*>(cNode + 4);          // remembered -> next
+    }
+    else if (section)
+    {
+        node = *reinterpret_cast<DWORD*>(section + 0x18);     // list head
+        for (int k = 0; k < idx && node; ++k)
+        {
+            if (!valid(node)) { node = 0; break; }            // same guards as the walk
+            node = *reinterpret_cast<DWORD*>(node + 4);
+        }
+    }
+
+    if (!node) return 0x5270EA;                               // xor eax,eax (not found)
+
+    cSection = section; cIdx = idx; cNode = node;
+    R->EAX(node);
+    R->ESI(0);                                                // loop: esi==0 -> this is the entry
+    return 0x5270CC;                                          // re-enter at the loop top
+}
+
 // ------------------------------------------------------------------
 //  LATE co-loaded-DLL cell-index scan  @ WinMain (0x6BB9A0, 5 bytes:
 //  push ebp / mov ebp,esp / push -1).
