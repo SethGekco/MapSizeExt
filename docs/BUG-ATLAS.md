@@ -2,7 +2,10 @@
 
 Target: **Yuri's Revenge 1.001**, 32-bit `gamemd.exe` /
 `gamemd-spawn.exe` (CnCNet spawner). Pinned analysis SHA-256
-`3e81a617…d308600`. Goal: nominal 512×512 maps on a **1024×1024 internal
+`3e81a617…d308600`.
+
+> NOTE (verified 2026-09-01 by tools/verify_release.py): this inherited SHA matches NEITHER the reference gamemd.exe (7b8a0685...) NOR the live gamemd-spawn.exe (9b269851...). Correctness does not depend on it -- every patch site is byte-verified individually at runtime and skipped on mismatch.
+ Goal: nominal 512×512 maps on a **1024×1024 internal
 pointer plane** (raise cell stride 512→1024).
 
 This document records, in detail, every bug we have characterised, its exact

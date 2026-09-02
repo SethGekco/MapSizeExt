@@ -8,6 +8,9 @@ Raise RA2/Yuri's Revenge cell-plane stride 512→1024 so large maps (goal
 **300×300**, his base did 250×250) load and play. Target `gamemd-spawn.exe`
 (CnCNet spawner), pinned gamemd SHA `3e81a617…d308600`.
 
+> NOTE (verified 2026-09-01 by tools/verify_release.py): this inherited SHA matches NEITHER the reference gamemd.exe (7b8a0685...) NOR the live gamemd-spawn.exe (9b269851...). Correctness does not depend on it -- every patch site is byte-verified individually at runtime and skipped on mismatch.
+
+
 ## THE WINNING APPROACH (current)
 Do **NOT** use our old broad MSVC byte-sweep (`src/*.cpp`, `CuratedBase` mode) —
 it has wall + sidebar false positives (§2.1/2.2). Instead **build Krisztiaan's

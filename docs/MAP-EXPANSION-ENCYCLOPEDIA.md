@@ -7,6 +7,9 @@ build it's unique to, and what fixed it**. Companion to `BUG-ATLAS.md` (per-bug
 detail) and `HANDOFF.md` (current state). Pinned `gamemd.exe` SHA
 `3e81a617…d308600`.
 
+> NOTE (verified 2026-09-01 by tools/verify_release.py): this inherited SHA matches NEITHER the reference gamemd.exe (7b8a0685...) NOR the live gamemd-spawn.exe (9b269851...). Correctness does not depend on it -- every patch site is byte-verified individually at runtime and skipped on mismatch.
+
+
 The core change: cell index `Y*512+X` → `Y*1024+X`; MaxCells `0x40000`→`0x100000`;
 the pointer plane `Cells.Items` (`[MapClass+0x13C]`) must be populated, iterated,
 bounds-checked, coordinate-converted, and rendered **consistently** at 1024.

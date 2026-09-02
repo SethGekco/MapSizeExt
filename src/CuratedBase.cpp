@@ -7,7 +7,11 @@
 //  patches, so it AVOIDS the broad-sweep false-positive class that gives us
 //  the wall-connect and sidebar-brightness bugs (see docs/BUG-ATLAS.md).
 //
-//  Three tables, all verified against pinned gamemd SHA 3e81a617...d308600:
+//  Three tables, inherited from Krisztiaan's handoff, which verified them against
+//  gamemd SHA 3e81a617...d308600. NOTE (2026-09-01, tools/verify_release.py): that
+//  SHA matches NEITHER our reference gamemd.exe (7b8a0685...) NOR the live
+//  gamemd-spawn.exe (9b269851...). Nothing depends on it: every site below is
+//  byte-verified before being written and skipped on mismatch.
 //    * kCurated       : the 74 exact map-plane byte patches (owner-core,
 //                       pathfinding table, subzone scale, overlay-load,
 //                       visibility/shroud, iso-pack, veinhole).
