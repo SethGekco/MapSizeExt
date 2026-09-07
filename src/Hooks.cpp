@@ -555,7 +555,7 @@ DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
 //  return address -- a correct, esp-safe function skip.
 DEFINE_HOOK(657CE0, RadarClass_MinimapChanged_NullGuard, 5)
 {
-    if (g_MapStride > 512)
+    if (g_RadarScale > 1)               // only when WE enlarged the radar
     {
         const DWORD radar = 0x87F7E8;   // RadarClass::Instance
         if (*reinterpret_cast<DWORD*>(radar + 0x121C) == 0 ||
@@ -580,7 +580,7 @@ DEFINE_HOOK(657CE0, RadarClass_MinimapChanged_NullGuard, 5)
 // ============================================================
 DEFINE_HOOK(656EC0, RadarClass_UpdateMinimap_NullGuard, 5)
 {
-    if (g_MapStride > 512)
+    if (g_RadarScale > 1)               // only when WE enlarged the radar
     {
         const DWORD radar = 0x87F7E8;   // RadarClass::Instance
         if (*reinterpret_cast<DWORD*>(radar + 0x121C) == 0 ||
@@ -607,7 +607,11 @@ DEFINE_HOOK(656EC0, RadarClass_UpdateMinimap_NullGuard, 5)
 // ============================================================
 DEFINE_HOOK(70D990, Object_PlotOnRadar_NullGuard, 6)
 {
-    if (g_MapStride > 512 && *reinterpret_cast<DWORD*>(0x00880A04) == 0)
+    // g_RadarScale, NOT the stride: 0x880A04 is never written by ANY module, so
+    // this guard fires whenever it is armed. Keyed off the stride it disabled
+    // object blip plotting on every map at Stride=2048 -- blips never drawn or
+    // erased. Armed only when we actually enlarged the radar surface.
+    if (g_RadarScale > 1 && *reinterpret_cast<DWORD*>(0x00880A04) == 0)
         return 0x70DC42;                // bare `ret 4` -> clean skip
     return 0;
 }

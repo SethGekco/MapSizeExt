@@ -688,6 +688,19 @@ int ApplyRadarPatches(FILE* log)
         }
     }
     g_RadarScale = (int)scale;                          // >1 => enlarged => event erase is unreliable
+
+    // A map that fits the vanilla radar needs NOTHING here -- not the surface,
+    // not the loop gates, not the blit clips. Leaving those at their stock
+    // values keeps the radar bit-for-bit vanilla, which is what makes the
+    // event pulse erase correctly and lets the null-guard hooks below stay
+    // inert (they key off g_RadarScale). Previously every map got the
+    // stride-derived treatment, so a 216x121 map ran with 2048 loop gates and
+    // object blip plotting disabled -- the magenta smear the user reported.
+    if (scale <= 1)
+    {
+        if (log) fprintf(log, "[radar] map fits the vanilla radar (scale 1) -> left untouched\n");
+        return 0;
+    }
     const DWORD surfW = 400u * scale;
     const DWORD surfH = 640u * scale;
     const DWORD bytes = surfW * surfH * 2u;          // 0x7D000 * scale^2
