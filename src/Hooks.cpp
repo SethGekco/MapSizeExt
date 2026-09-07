@@ -38,6 +38,7 @@ int g_MapMaxW         = 512;
 int g_MapMaxH         = 512;
 int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
 int g_CoordBase       = 1000;    // per-map cell-number base (1000 = vanilla)
+int g_RadarScale      = 1;       // 1 = radar surface untouched (vanilla behaviour)
 int g_DiagVerbose     = 0;       // hot per-call trace logs off by default (file I/O = lag)
 
 // ============================================================
@@ -1065,7 +1066,7 @@ DEFINE_HOOK(6BB9A0, MapSizeExt_LateDllScan, 5)
 //  approximates the visibility duration. Pulses still never drawn.
 DEFINE_HOOK(65FA70, RadarEvent_Suppress_BigStride, 6)
 {
-    if (g_MapStride <= 512) return 0;   // vanilla: run the original AddEvent
+    if (g_RadarScale <= 1) return 0;    // radar surface untouched -> pulses erase correctly
     struct VirtEvent { int type; int x; int y; DWORD frame; };
     static VirtEvent ring[16];
     static int ringN = 0;

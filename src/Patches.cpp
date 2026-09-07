@@ -658,11 +658,17 @@ static bool PatchImm32(DWORD immVA, DWORD expect, DWORD nv, FILE* log, const cha
 int ApplyRadarPatches(FILE* log)
 {
     if (g_MapStride == 512) { if (log) fprintf(log, "[radar] surfaces stay 512  [no-op]\n"); return 0; }
-    DWORD scale = (DWORD)g_MapStride / 512u;         // 2 @1024, 4 @2048
-    // Size by MAP DIMS, not just stride (2026-08-19, the 1000x1000 minimap
-    // right-clip): the radar diamond needs ~(W+H) px of width on the 400-wide
-    // base surface; stride/512 gave 1600 px which fits 700x700 (1400) but
-    // clips 1000x1000 (2000). Read spawnmap.ini like the subzone picker does.
+
+    // Size the radar surface from the MAP, never from the configured stride.
+    // The diamond needs ~(W+H) px of width on the 400-wide base surface, so a
+    // small map needs NOTHING enlarged even when the INI says Stride=2048.
+    // Deriving from stride (the old behaviour) gave every map a 1600x2560
+    // surface, and that pointless enlargement is what breaks the radar EVENT
+    // erase -- which is why the under-attack pulse had to be suppressed. Sizing
+    // from the map keeps normal maps byte-for-byte vanilla here, so their
+    // pulses work natively again (user-reported 2026-09-01).
+    DWORD scale = 1;                                   // 1 = vanilla 400x640
+    bool sizeKnown = false;
     {
         char ini[MAX_PATH];
         GetModuleFileNameA(nullptr, ini, MAX_PATH);
@@ -673,10 +679,15 @@ int ApplyRadarPatches(FILE* log)
         int mx = 0, my = 0, mw = 0, mh = 0;
         if (sscanf_s(buf, "%d,%d,%d,%d", &mx, &my, &mw, &mh) == 4 && mw > 0 && mh > 0)
         {
-            const DWORD need = (DWORD)(mw + mh) / 400u + 1u;   // 700x700 -> 4 (unchanged), 1000x1000 -> 6
-            if (need > scale) scale = need;
+            sizeKnown = true;
+            scale = (DWORD)(mw + mh) / 400u + 1u;      // 146x169 -> 1, 700x700 -> 4, 1000x1000 -> 6
+        }
+        else
+        {
+            scale = (DWORD)g_MapStride / 512u;         // unknown map: keep the old safe over-size
         }
     }
+    g_RadarScale = (int)scale;                          // >1 => enlarged => event erase is unreliable
     const DWORD surfW = 400u * scale;
     const DWORD surfH = 640u * scale;
     const DWORD bytes = surfW * surfH * 2u;          // 0x7D000 * scale^2
@@ -704,8 +715,8 @@ int ApplyRadarPatches(FILE* log)
     n += PatchImm32(0x6901E7, 0x190, surfW, log, "radar");   // mov [esp+..],400
     n += PatchImm32(0x690449, 0x190, surfW, log, "radar");   // mov ecx,400
     n += PatchImm32(0x690460, 0x280, surfH, log, "radar");   // mov edx,640
-    if (log) fprintf(log, "[radar] surface %ux%u (%u bytes), gate %u : %d/16\n",
-                     surfW, surfH, bytes, gate, n);
+    if (log) fprintf(log, "[radar] surface %ux%u (%u bytes, scale %u%s), gate %u : %d/16\n",
+                     surfW, surfH, bytes, scale, sizeKnown ? "" : " map-size unknown", gate, n);
     return n;
 }
 
