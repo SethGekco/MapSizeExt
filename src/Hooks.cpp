@@ -553,17 +553,45 @@ DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
 //  temp" at 0x5257AC and the wild EIP=0x0D control-flow smash). Instead jump
 //  to a bare `ret` (0x657D3C) and let the CPU's own `ret` pop the caller's
 //  return address -- a correct, esp-safe function skip.
-DEFINE_HOOK(657CE0, RadarClass_MinimapChanged_NullGuard, 5)
+// Radar minimap surfaces: [Radar+0x121C] / [Radar+0x1220]. Creation (0x654650)
+// is gated on the radar rect being positive ([Radar+0x14A4]/[+0x14A8] > 0); if
+// it is skipped the surfaces stay null and MinimapChanged/UpdateMinimap would
+// dereference them. The NULL CHECK is the real safety condition, so it now runs
+// unconditionally -- gating it on stride (or on our radar scale) added no
+// protection and risked crashing exactly when the surfaces were missing. Logs
+// once so a run tells us whether the surfaces exist at all.
+static bool RadarSurfacesMissing()
 {
-    if (g_RadarScale > 1)               // only when WE enlarged the radar
+    const DWORD radar = 0x87F7E8;                   // RadarClass::Instance
+    const DWORD s1 = *reinterpret_cast<DWORD*>(radar + 0x121C);
+    const DWORD s2 = *reinterpret_cast<DWORD*>(radar + 0x1220);
+    const bool missing = (s1 == 0 || s2 == 0);
+    static bool logged = false;
+    if (!logged)
     {
-        const DWORD radar = 0x87F7E8;   // RadarClass::Instance
-        if (*reinterpret_cast<DWORD*>(radar + 0x121C) == 0 ||
-            *reinterpret_cast<DWORD*>(radar + 0x1220) == 0)
+        logged = true;
+        char path[MAX_PATH];
+        GetModuleFileNameA(nullptr, path, MAX_PATH);
+        char* sl = strrchr(path, '\\');
+        if (sl) *(sl + 1) = '\0';
+        strcat_s(path, "MapSizeExt.log");
+        FILE* f = nullptr;
+        fopen_s(&f, path, "a");
+        if (f)
         {
-            return 0x657D3C;            // a bare `ret` -> clean skip of the function
+            fprintf(f, "[radar] minimap surfaces: %08X / %08X -> %s (rect %d x %d)\n",
+                    s1, s2, missing ? "MISSING, minimap refresh skipped" : "present, vanilla refresh",
+                    *reinterpret_cast<int*>(radar + 0x14A4), *reinterpret_cast<int*>(radar + 0x14A8));
+            fclose(f);
         }
     }
+    return missing;
+}
+
+DEFINE_HOOK(657CE0, RadarClass_MinimapChanged_NullGuard, 5)
+{
+    if (RadarSurfacesMissing())
+        return 0x657D3C;                // bare `ret` -> clean skip instead of a null deref
     return 0;                           // surfaces exist -> run normally
 }
 
@@ -580,15 +608,8 @@ DEFINE_HOOK(657CE0, RadarClass_MinimapChanged_NullGuard, 5)
 // ============================================================
 DEFINE_HOOK(656EC0, RadarClass_UpdateMinimap_NullGuard, 5)
 {
-    if (g_RadarScale > 1)               // only when WE enlarged the radar
-    {
-        const DWORD radar = 0x87F7E8;   // RadarClass::Instance
-        if (*reinterpret_cast<DWORD*>(radar + 0x121C) == 0 ||
-            *reinterpret_cast<DWORD*>(radar + 0x1220) == 0)
-        {
-            return 0x657D3C;            // a bare `ret` -> clean skip
-        }
-    }
+    if (RadarSurfacesMissing())
+        return 0x657D3C;                // bare `ret` -> clean skip instead of a null deref
     return 0;
 }
 
