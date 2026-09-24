@@ -44,6 +44,7 @@ static void ApplyInit()
     g_StrideSkipFrom  = cfg.StrideSkipFrom;
     g_StrideSkipTo    = cfg.StrideSkipTo;
     g_DiagVerbose     = cfg.DiagVerbose;
+    g_RadarEvents     = cfg.RadarEvents;
     g_CuratedBase     = cfg.CuratedBase;
 
     // IsoMapPack5 decode-buffer bump: original 400x640x2. The buffer is indexed

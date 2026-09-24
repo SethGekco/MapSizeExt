@@ -130,7 +130,12 @@ Four independent site classes; miss any one and coordinates wrap:
   `mov ecx,[0x880A04]; mov esi,[ecx]; call [esi+0x78]`.
 - **`0x880A04` has ZERO writes in gamemd** — set up by a module (or never). At
   1024 its object's vtable is garbage → **virtual call into heap** `0x021B9CA4`.
-- `0x660540`: skippable (result feeds only sync-checksum logging) — but skipping
+- `0x660540`: **NOT skippable.** It is `RadarEventClass::Erase()` — it repaints
+  the previous frame's pulse rectangle from the map (per-pixel callback
+  `0x65FB60`) and marks the radar dirty rect. Skipping it is what makes radar
+  event pulses smear. (The earlier note here, and the other implementation's
+  `Map512CoordTransformGuard`, wrongly call it sync-checksum logging.) Old note:
+  skipping
   **needs the 8 iterator shl-9 sites or it wraps bottom-right routing**.
 - `0x6601F1` (twin, inside the per-object tactical loop `0x660000`): **the
   current unsolved bottom-left crash.** Skipping the whole loop is too broad.

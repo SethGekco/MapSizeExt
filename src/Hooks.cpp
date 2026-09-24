@@ -38,7 +38,8 @@ int g_MapMaxW         = 512;
 int g_MapMaxH         = 512;
 int g_MapMaxDimension = 512;     // per-axis gate (replaces cmp ax,0x200)
 int g_CoordBase       = 1000;    // per-map cell-number base (1000 = vanilla)
-int g_RadarScale      = 1;       // 1 = radar surface untouched (vanilla behaviour)
+int g_RadarScale      = 1;
+int g_RadarEvents     = 1;       // [Debug] RadarEvents: 0 = suppress pulses on big maps       // 1 = radar surface untouched (vanilla behaviour)
 int g_DiagVerbose     = 0;       // hot per-call trace logs off by default (file I/O = lag)
 
 // ============================================================
@@ -833,46 +834,67 @@ DEFINE_HOOK(567F34, RevealArea2_ShroudWrite_Diag, 6)
 }
 
 // ============================================================
-//  0x880A04 null-singleton crash guard  @ 0x660540
-//  This gamemd function (thiscall; its only ret is a bare `ret` c3 at
-//  0x660729) does a small coord-offset loop then UNCONDITIONALLY enters
-//  a loop that dereferences the coord-transform singleton at ds:0x880A04
-//  and calls virtuals on it (`mov esi,[ecx]; call [esi+0x78]` @0x66058C).
-//  0x880A04 is written by NO code in gamemd (18 reads, 0 writes) -> it is
-//  always null, so this whole function is DEAD in vanilla (never reached).
-//  Our x1024 coords wrongly route here -> guaranteed AV at 0x66058C
-//  (seen on deploy / sell / game-end). Since the function always crashes
-//  when reached and does nothing reachable when the singleton is null,
-//  skip it cleanly: at entry ESP = return address, and the function takes
-//  no stack args (ret c3), so redirect to a bare `ret` (0x66053A) to
-//  return to the caller with a balanced stack. eax=0 as a safe result.
+//  RADAR EVENT ERASE  @0x660540  --  RadarEventClass::Erase()
+//
+//  THIS IS THE RADAR SMEAR. Read the disassembly before touching it:
+//      0x66054E  call 0x660730          ; 4 rotated corner points of the pulse
+//      0x660553  edx=[esi+4] esi=[esi+8]; offset them by the event's position
+//      0x660587  push 0x65FB60          ; per-pixel callback ->
+//                                       ;   RadarClass::Instance->0x6562D0,
+//                                       ;   i.e. REPLOT that pixel from its cell
+//      0x6605A6  call [esi+0x78] / +0x44; walk each of the 4 edges
+//      0x6605FA+ union the 4 rects into the radar dirty rect 0x8809F4..0x880A00
+//  So the function repaints the previous frame's rectangle from the underlying
+//  map and marks the region for blit. Its one caller 0x65FE3B sits in
+//  RadarEventClass::Update (0x65FE00), driven per frame from the radar tick at
+//  0x65336D -- NOT from sync logging, which is what the old comment here
+//  claimed and what the other stride implementation also assumes.
+//
+//  The old guard skipped the whole function whenever Stride > 512. With the
+//  erase gone the under-attack pulse is drawn every frame and never repainted,
+//  so it leaves magenta trails that only fade where unrelated activity happens
+//  to dirty those cells -- on EVERY map size, which is why the trails survived
+//  sizing the radar surface from the map, survived PatchModules=0, and showed
+//  up on small maps too. Suppressing the events was treating the symptom.
+//
+//  What remains is a real null guard. 0x880A04 is the drawing singleton the
+//  erase calls virtuals on; the DRAW path (0x6601F1/0x66022D/0x66024A) derefs
+//  the same pointer and plainly works at runtime, so it is not the always-null
+//  object the old comment assumed -- but if it ever is null, returning is
+//  still better than an AV. Log its value once so a run settles the question.
 // ============================================================
 // Size 7, not 5. Syringe resumes at addr+max(size,5) and 0x660545 is inside
 // `lea eax,[esp+0x48]` (0x660543, 4 bytes). 7 covers `sub esp,0x68` + that
 // `lea`, resuming at 0x660547 (`push ebx`).
-//
-// This mattered: the stride-512 path below returns 0, so the stub replayed a
-// truncated `lea` and then ran into its own jump bytes. Only the stride>512
-// path (which returns 0x66053A) was safe -- i.e. it was broken for exactly the
-// normal-sized maps this DLL is supposed to leave alone.
-DEFINE_HOOK(660540, CoordTransform_NullSingleton_Guard, 7)
+DEFINE_HOOK(660540, RadarEvent_Erase_NullGuard, 7)
 {
-    // The function derefs ds:0x880A04 as `mov ecx,[0x880A04]; mov esi,[ecx];
-    // call [esi+0x78]`. At stride 1024 that singleton is a NON-object (observed a
-    // heap ptr whose vtable is garbage -> the virtual call jumps into heap junk
-    // 0x07Cxxxxx on unit spawn). Validating the vtable range false-passed (the
-    // garbage landed inside the exe range), so validate nothing: this function has
-    // exactly ONE caller (0x65FE3B, inside the fn reached only from
-    // Multiplay_LogToSync), and its result is consumed only by sync-checksum
-    // logging -- never gameplay -- so at stride>512 skip it unconditionally.
-    // eax=0 is a harmless logged value. Stride 512 keeps the vanilla null-check.
-    DWORD s = *reinterpret_cast<DWORD*>(0x00880A04);
-    if (g_MapStride > 512 || s == 0)
+    const DWORD s = *reinterpret_cast<DWORD*>(0x00880A04);
+
+    static bool logged = false;
+    if (!logged)
+    {
+        logged = true;
+        char path[MAX_PATH];
+        GetModuleFileNameA(nullptr, path, MAX_PATH);
+        char* sl = strrchr(path, '\\');
+        if (sl) *(sl + 1) = '\0';
+        strcat_s(path, "MapSizeExt.log");
+        FILE* f = nullptr;
+        fopen_s(&f, path, "a");
+        if (f)
+        {
+            fprintf(f, "[radar] event erase reached, draw singleton 0x880A04 = %08X -> %s\n",
+                    s, s ? "valid, erase runs" : "NULL, erase skipped");
+            fclose(f);
+        }
+    }
+
+    if (s == 0)
     {
         R->EAX(0);
         return 0x66053A;   // a bare `ret` (c3) -> clean return to caller
     }
-    return 0;              // stride 512, non-null singleton -> run original
+    return 0;              // run the original erase -- this is what clears the pulse
 }
 
 // (GetCellAt_GarbageGuard @0x565766 REMOVED 2026-08-20: trampolined every
@@ -1089,9 +1111,13 @@ DEFINE_HOOK(6BB9A0, MapSizeExt_LateDllScan, 5)
 //  0x7F0998+type*16, enable flag byte @0x7F09A4+type*16). AL=0 -> caller
 //  skips the EVA exactly like vanilla; AL=1 -> announce. ~30s validity
 //  approximates the visibility duration. Pulses still never drawn.
+//  v3 (2026-09-24): the trails were never an event-position problem -- the
+//  erase at 0x660540 was being skipped (see RadarEvent_Erase_NullGuard). With
+//  that restored, pulses clear themselves and suppression is unnecessary.
+//  Kept only as a kill switch: [Debug] RadarEvents=0 brings it back.
 DEFINE_HOOK(65FA70, RadarEvent_Suppress_BigStride, 6)
 {
-    if (g_RadarScale <= 1) return 0;    // radar surface untouched -> pulses erase correctly
+    if (g_RadarScale <= 1 || g_RadarEvents) return 0;   // draw normally
     struct VirtEvent { int type; int x; int y; DWORD frame; };
     static VirtEvent ring[16];
     static int ringN = 0;
@@ -1122,6 +1148,7 @@ DEFINE_HOOK(65FA70, RadarEvent_Suppress_BigStride, 6)
     R->EAX(1);
     return 0x65FB47;                                      // bare ret 4 (announced)
 }
+
 
 // ------------------------------------------------------------------
 //  A* pool VirtualAlloc widening support: the ctor's three pool mallocs are

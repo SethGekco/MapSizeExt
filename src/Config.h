@@ -53,6 +53,7 @@ struct MapSizeConfig
     int StrideSkipTo;
     int DiagVerbose;
     int AntaresIniFix;
+    int RadarEvents;
 
     int Total() const { return Stride * Stride; }
 };
@@ -101,6 +102,9 @@ inline MapSizeConfig ReadConfig()
     // Antares re-sorts its INI index once per parsed line -> big maps spend
     // minutes sorting before the loading screen. Default on (big maps only).
     cfg.AntaresIniFix  = GetPrivateProfileIntA("Debug", "AntaresIniFix",  1, iniPath);
+    // Radar event pulses on big maps. 1 = draw with the position fix,
+    // 0 = suppress them entirely (the pre-2026-09-24 behaviour).
+    cfg.RadarEvents    = GetPrivateProfileIntA("Debug", "RadarEvents",    1, iniPath);
 
     // Clamp: never go below the vanilla values.
     if (cfg.Stride       < 512) cfg.Stride       = 512;

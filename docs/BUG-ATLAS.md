@@ -243,9 +243,19 @@ then carry over our plane-init/bounds coverage (adds 300×300). Best of both.
 - **Root cause:** coord-transform singleton `ds:0x880A04` holds garbage at
   stride>512; `0x660540` does `mov ecx,[0x880A04]; mov esi,[ecx]; call [esi+0x78]`
   → virtual call into heap junk.
-- **Fix:** `CoordTransform_NullSingleton_Guard` @`0x660540` — at stride>512 skip
-  unconditionally (result feeds only sync-checksum logging, never gameplay;
-  `eax=0` is a harmless logged value; return the bare `ret` at `0x66053A`).
+- **Fix (SUPERSEDED 2026-09-24):** `CoordTransform_NullSingleton_Guard`
+  @`0x660540` skipped the function at stride>512. **That guard WAS the radar
+  smear.** `0x660540` is `RadarEventClass::Erase()`: it re-walks the previous
+  frame's pulse rectangle with the per-pixel callback `0x65FB60` (→
+  `RadarClass::Instance->0x6562D0`, replot that pixel from its cell) and then
+  unions the four edges into the radar dirty rect `0x8809F4`. Its only caller
+  `0x65FE3B` lives in `RadarEventClass::Update` (`0x65FE00`), driven per frame
+  from the radar tick at `0x65336D` — **not** sync logging. Skipping it left
+  every pulse permanently painted on the minimap (magenta trails that only fade
+  where unrelated activity dirties those cells), on every map size. Replaced by
+  `RadarEvent_Erase_NullGuard`, which skips **only** when `0x880A04` is null.
+  Note the other stride implementation carries the same unconditional skip
+  (`Map512CoordTransformGuard`), so it has the same bug.
 
 ### 2.7 Flying-unit (HunterSeeker) crash — FIXED
 - **Symptom:** AV `0x4CDD5F`, garbage `0x465F5445` ("ET_F").
