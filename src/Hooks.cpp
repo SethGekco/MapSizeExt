@@ -406,7 +406,7 @@ DEFINE_HOOK(68BE0C, Waypoint_CoordBaseDecode, 5)
 //  Logs once. Gated stride>512 so it is a strict no-op on vanilla-size play.
 DEFINE_HOOK(687410, Spawn_WaypointDiag, 6)
 {
-    if (g_MapStride > 512)
+    if (g_MapStride > 512 && g_DiagVerbose)
     {
         static int calls = 0;
         if (++calls <= 24)          // log every call (capped), not once -- capture sequence
@@ -449,7 +449,7 @@ DEFINE_HOOK(687410, Spawn_WaypointDiag, 6)
 // engine's empty-slot sentinel X is the word at 0xB05458; we flag matches.
 DEFINE_HOOK(68839A, Spawn_AssignerDiag, 6)
 {
-    if (g_MapStride > 512)
+    if (g_MapStride > 512 && g_DiagVerbose)
     {
         static int calls = 0;
         if (++calls <= 8)           // assigner may loop forever on hang -> cap hard
@@ -505,7 +505,7 @@ DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
     int   count = *reinterpret_cast<int*>(self + 4);
     void* buf   = *reinterpret_cast<void**>(self + 8);
 
-    if (g_MapStride > 512)
+    if (g_MapStride > 512 && g_DiagVerbose)   // logging only; the guard below is unconditional
     {
         static int n = 0;
         if (n < 8)
