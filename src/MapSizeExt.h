@@ -77,8 +77,8 @@ extern int g_CrashGuard;        // 1 = GetCellAt garbage-slot guard active (INI 
 // N = Y*base + X; we decode with the same base. Set per-map at waypoint read; 1000
 // (absent key / vanilla) == unchanged behaviour. See Hooks.cpp Waypoint_CoordBaseDecode.
 extern int g_CoordBase;
-extern int g_RadarScale;
-extern int g_RadarEvents;      // 1 = draw radar event pulses (position-corrected on big maps)       // radar surface multiplier actually applied (1 = vanilla)
+extern int g_RadarScale;       // radar surface multiplier actually applied (1 = vanilla)
+extern int g_RadarEvents;      // 1 = draw radar event pulses, 0 = suppress them
 extern int g_DiagVerbose;      // per-call trace logging (PATH/ENC/DEC/REVEAL), default 0
 
 // --- Vanilla [Waypoints] reader cell-number decode (base 1000) ----
@@ -101,3 +101,12 @@ extern int g_StrideSkipTo;
 extern int g_CuratedBase;
                                 // W and H are checked independently;
                                 // there is NO W+H sum check in the engine.
+
+// ============================================================
+//  CrashWatch.cpp -- first-chance exception watcher. Writes
+//  MapSizeExt_crash.log (module-attributed EIP + stack, and whether the
+//  faulting address is the cell array overrun) and then always lets the
+//  game's own handler run. See CrashWatch.cpp for why it uses no CRT.
+// ============================================================
+void InstallCrashWatch();
+void CaptureModuleTable();

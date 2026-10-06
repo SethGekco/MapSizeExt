@@ -57,6 +57,10 @@ static void ApplyInit()
     PatchDword(ADDR_ISOPACK_H_IMM,     isoH);
     PatchDword(ADDR_ISOPACK_BYTES_IMM, isoBytes);
 
+    // Arm the crash watcher before any patching, so a fault during init is
+    // reported too. It only observes -- see CrashWatch.cpp.
+    InstallCrashWatch();
+
     char logPath[MAX_PATH];
     GetModuleFileNameA(nullptr, logPath, MAX_PATH);
     char* slash = strrchr(logPath, '\\');

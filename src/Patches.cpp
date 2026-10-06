@@ -1246,6 +1246,43 @@ static int ScanModuleCellIndex(HMODULE h, const char* name, int shift, DWORD tot
     return n;
 }
 
+// A DLL whose name appears in [Debug] ModuleScanSkip is left alone by the
+// generic scan. This matters for anyone running MapSizeExt alongside their OWN
+// map-expansion DLLs: the scan recognises inline GetCellIndex by pattern, so it
+// will happily rewrite stride-512 cell math inside a third-party DLL that meant
+// to keep it -- and the result is silent, because both DLLs then index the same
+// array with different conventions. The frameworks we actually target
+// (Antares/Ares/Phobos) are patched by name elsewhere and are unaffected by
+// this list. Comma-separated, matched case-insensitively against the module
+// name, e.g. ModuleScanSkip=GC28.dll,yr_large_overlay_release.dll
+static bool ModuleScanSkipped(const char* name)
+{
+    static char list[512];
+    static bool loaded = false;
+    if (!loaded)
+    {
+        loaded = true;
+        char ini[MAX_PATH];
+        GetModuleFileNameA(nullptr, ini, MAX_PATH);
+        char* s = strrchr(ini, '\\'); if (s) *(s + 1) = '\0';
+        strcat_s(ini, "MAPSIZEEXT.INI");
+        GetPrivateProfileStringA("Debug", "ModuleScanSkip", "", list, sizeof(list), ini);
+    }
+    if (!list[0] || !name || !name[0]) return false;
+
+    const size_t nlen = strlen(name);
+    for (const char* p = list; *p; )
+    {
+        while (*p == ' ' || *p == ',') ++p;
+        const char* start = p;
+        while (*p && *p != ',') ++p;
+        size_t len = (size_t)(p - start);
+        while (len && start[len - 1] == ' ') --len;
+        if (len == nlen && _strnicmp(start, name, nlen) == 0) return true;
+    }
+    return false;
+}
+
 // Scans every module loaded from the game directory (skipping gamemd itself and
 // this DLL). Returns total sites patched.
 static int ApplyAllModuleCellScans(int shift, DWORD total, FILE* log)
@@ -1274,6 +1311,11 @@ static int ApplyAllModuleCellScans(int shift, DWORD total, FILE* log)
         {
             if (me.hModule == self || me.hModule == exe) continue;
             if (_strnicmp(me.szExePath, dir, dlen) != 0) continue;         // game dir only
+            if (ModuleScanSkipped(me.szModule))
+            {
+                if (log) fprintf(log, "[dll] %-12s SKIPPED via [Debug] ModuleScanSkip\n", me.szModule);
+                continue;
+            }
             const int n = ScanModuleCellIndex(me.hModule, me.szModule, shift, total, log);
             if (n) ++mods;
             grand += n;

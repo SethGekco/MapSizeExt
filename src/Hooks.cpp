@@ -1072,6 +1072,12 @@ DEFINE_HOOK(5270C5, INI_SectionEntryByIndex_Memo, 5)
 //  Idempotent (already-patched sites no longer read shl 9) and stride-gated.
 DEFINE_HOOK(6BB9A0, MapSizeExt_LateDllScan, 5)
 {
+    // Every DLL injected after us is loaded by now, so re-snapshot the module
+    // table the crash watcher attributes addresses against. Unconditional:
+    // the watcher is useful at stride 512 too.
+    static bool captured = false;
+    if (!captured) { captured = true; CaptureModuleTable(); }
+
     static bool done = false;
     if (!done && g_MapStride > 512)
     {
