@@ -2,6 +2,24 @@
 
 Newest first. Older history is in `git log` and `docs/HANDOFF.md`.
 
+## Unreleased — path continuation also hands out from the same cell after an order re-send
+
+**Why:** the first in-game run (30 players, 1000x1000, `ReuseSteps=24`) handed
+out only 17.5% of asks; 63% were refused as "no progress". Infantry take tens of
+frames to cross a cell and `ApproachTarget` re-sends SetDestination every few
+frames, so most asks come from the cell of the last hand-out, not a blocked unit.
+
+**What:** two more hooks mark a unit when an order re-send ends its path:
+`InfantrySetDestination_NoteWipe` @0x51AD11 (the `-1` store in
+`InfantryClass::SetDestination`) and `InfantryAssignTarget_NoteWipe` @0x51B2A2
+(the store in `InfantryClass::AssignTarget`). A marked unit asking from the same
+cell as its last hand-out gets the rest of the route again. A path ended by
+anything else (the walk locomotor when the next cell is blocked) still gets a
+real search from the same cell, so blocked units still re-plan. `PATHREUSE` lines
+add `same cell` and `order-wipes` counts.
+
+**Consumer action:** none; still off by default.
+
 ## Unreleased — path continuation on big maps (`[Path] ReuseSteps`, default off)
 
 **Why:** in 30-player games on `mapsizeext_1000x1000.map`, unit pathfinding

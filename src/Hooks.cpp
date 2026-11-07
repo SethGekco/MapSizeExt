@@ -1353,14 +1353,19 @@ DEFINE_HOOK(42AAFC, AStar_BuildPath_LengthCap, 5)
 //
 //  Fix: remember each unit's last full route. When the same unit asks again
 //  for the same destination cell with no kept steps, and it stands on that
-//  route at index j -- further along than at its last hand-out, and fewer than
-//  ReuseSteps cells from where the search started -- it gets the rest of the
-//  route instead of a search. That is the route it would have walked had the
-//  re-send not wiped it, and the game's 24-cell re-plan horizon stays: past it
-//  the unit searches as before. A blocked unit has not moved on, so it gets a
-//  real search. Routes through a tunnel (facing 8) are never kept. Every input
-//  is synchronized game state (UniqueID, cells, frame), so all clients make
-//  the same choices; every player needs the same DLL and ReuseSteps value.
+//  route at index j, fewer than ReuseSteps cells from where the search started,
+//  it gets the rest of the route instead of a search. That is the route it
+//  would have walked had the re-send not wiped it, and the game's 24-cell
+//  re-plan horizon stays: past it the unit searches as before. j must be past
+//  the last hand-out, or equal to it when an order re-send wiped the path since
+//  then: infantry need tens of frames to cross a cell and the re-sends come
+//  every few frames, so most re-asks come from the same cell (measured: 63% of
+//  asks with progress required). A path ended by anything else -- the walk
+//  locomotor when the next cell is blocked (0x75B6D4/0x75BA79) -- in the same
+//  cell gets a real search, so blocked units still re-plan. Routes through a
+//  tunnel (facing 8) are never kept. Every input is synchronized game state
+//  (UniqueID, cells, frame, order calls), so all clients make the same choices;
+//  every player needs the same DLL and ReuseSteps value.
 //
 //  Find_Path @0x4CBBA0 (sole caller UpdatePathfinding @0x4D3E4B):
 //    0x4CBBF8  mov ecx,[esp+0x30]     ; kept steps   (stolen; jne target)
@@ -1382,6 +1387,12 @@ DEFINE_HOOK(42AAFC, AStar_BuildPath_LengthCap, 5)
 //  edi,eax; test edi,edi; mov [esp+0x14],edi`, no relative operand, nothing
 //  branches into 0x4D3E51-57): EAX = PathType or 0, EBP = unit, EBX = kept,
 //  [esp+0x6C] = the facings, [esp+0x1FB0] = the destination cell.
+//  Order re-send wipes are marked at the two stores that end the path there:
+//    0x51AD11  mov [ebp+0x5E0],esi    ; InfantryClass::SetDestination 0x51AA40,
+//              (6, branch target of 0x51AC3C/0x51AC4B; a wipe when ESI = -1)
+//    0x51B2A2  mov dword [esi+0x5E0],-1  ; InfantryClass::AssignTarget 0x51B1F0 (10)
+//  Callers seen (PerfExt path meter, run V): FootClass::ApproachTarget 0x4D68BD
+//  (58% of searches, 84% of A* time), team code 0x6EBE5C, SquadExt.
 //  The table (2 ways x 8,192 sets, facings packed two per byte, 17 MB) is
 //  allocated on the first search of a big-map game. NO-OP at 512.
 // ============================================================
@@ -1394,12 +1405,13 @@ struct PathMemo
     DWORD frame;     // frame of the last search or hand-out (which way to replace)
     int   steps;     // facings, without the -1 terminator; 0 = empty
     int   served;    // route index the last hand-out started at (0 = none yet)
+    int   rewiped;   // an order re-send ended the path since the last hand-out or search
     DWORD type[8];   // the search's PathType; a hand-out keeps the fields it does not set
     BYTE  dirs[(kMaxPathSteps + 1) / 2];   // facings 0..7, two per byte
 };
 static PathMemo* g_PathMemo = nullptr;
 static DWORD g_HandOut[8];   // the PathType a hand-out returns
-static struct { DWORD calls, served, stored, kept, none, dest, offRoute, noProgress, evicted; } g_Reuse;
+static struct { DWORD calls, served, sameCell, stored, kept, none, dest, offRoute, noProgress, evicted, wipes; } g_Reuse;
 
 static inline DWORD GameFrame() { return *reinterpret_cast<DWORD*>(0xA8ED84); }
 static inline int MemoFacing(const PathMemo& m, int i) { return (m.dirs[i >> 1] >> ((i & 1) * 4)) & 0xF; }
@@ -1416,10 +1428,10 @@ DEFINE_HOOK(4CBBF8, FindPath_ContinueRoute, A)
 {
     if (!g_Active || g_ReuseSteps <= 0 || !g_PathMemo) return 0;
     if ((++g_Reuse.calls & 0xFFFF) == 0)
-        DeployDiagLog("PATHREUSE calls %u served %u stored %u | miss: kept %u none %u dest %u "
-                      "off-route %u no-progress %u | evicted %u\n", g_Reuse.calls, g_Reuse.served,
-                      g_Reuse.stored, g_Reuse.kept, g_Reuse.none, g_Reuse.dest, g_Reuse.offRoute,
-                      g_Reuse.noProgress, g_Reuse.evicted);
+        DeployDiagLog("PATHREUSE calls %u served %u (same cell %u) stored %u | miss: kept %u none %u "
+                      "dest %u off-route %u no-progress %u | evicted %u order-wipes %u\n", g_Reuse.calls,
+                      g_Reuse.served, g_Reuse.sameCell, g_Reuse.stored, g_Reuse.kept, g_Reuse.none,
+                      g_Reuse.dest, g_Reuse.offRoute, g_Reuse.noProgress, g_Reuse.evicted, g_Reuse.wipes);
     const DWORD esp = R->ESP();
     if (*reinterpret_cast<int*>(esp + 0x30) != 0) { ++g_Reuse.kept; return 0; }
     PathMemo* m = FindMemo(*reinterpret_cast<DWORD*>(R->ESI() + 0x10));
@@ -1441,7 +1453,8 @@ DEFINE_HOOK(4CBBF8, FindPath_ContinueRoute, A)
             j = i;
     }
     if (j < 0) { ++g_Reuse.offRoute; return 0; }
-    if (j <= m->served) { ++g_Reuse.noProgress; return 0; }
+    if (j < m->served || (j == m->served && !m->rewiped)) { ++g_Reuse.noProgress; return 0; }
+    if (j == m->served) ++g_Reuse.sameCell;
 
     DWORD* buf = reinterpret_cast<DWORD*>(R->EDI());
     const int n = m->steps - j;            // >= 1: j < window <= steps
@@ -1455,6 +1468,7 @@ DEFINE_HOOK(4CBBF8, FindPath_ContinueRoute, A)
     g_HandOut[2] = n + 1;                                // Length, with the -1
     g_HandOut[3] = R->EDI();                             // Directions
     m->served = j;
+    m->rewiped = 0;
     m->frame = GameFrame();
     ++g_Reuse.served;
     R->EAX(reinterpret_cast<DWORD>(g_HandOut));
@@ -1502,11 +1516,34 @@ DEFINE_HOOK(4D3E50, UpdatePathfinding_RememberRoute, 8)
     m->frame = GameFrame();
     m->steps = steps;
     m->served = 0;
+    m->rewiped = 0;
     memcpy(m->type, type, sizeof m->type);
     memset(m->dirs, 0, (steps + 1) / 2);
     for (int i = 0; i < steps; ++i)
         m->dirs[i >> 1] |= static_cast<BYTE>(buf[i] << ((i & 1) * 4));
     ++g_Reuse.stored;
+    return 0;
+}
+
+static void NoteOrderWipe(DWORD foot)
+{
+    if (!g_Active || g_ReuseSteps <= 0 || !g_PathMemo) return;
+    if (PathMemo* m = FindMemo(*reinterpret_cast<DWORD*>(foot + 0x10)))
+    {
+        m->rewiped = 1;
+        ++g_Reuse.wipes;
+    }
+}
+
+DEFINE_HOOK(51AD11, InfantrySetDestination_NoteWipe, 6)
+{
+    if (R->ESI() == 0xFFFFFFFF) NoteOrderWipe(R->EBP());
+    return 0;
+}
+
+DEFINE_HOOK(51B2A2, InfantryAssignTarget_NoteWipe, A)
+{
+    NoteOrderWipe(R->ESI());
     return 0;
 }
 

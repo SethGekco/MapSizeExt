@@ -72,9 +72,11 @@ MaxHeight=512
   off). Infantry chasing a far target get their orders re-sent about once per
   cell, and each re-send makes the game search the whole route again; that was
   over half the game thread in 30-player 1000×1000 games. With it on, a unit
-  still on its last route that has moved along it gets the rest of that route
-  instead of a new search, for 24 cells after each search (the game's own
-  re-plan distance). Every player in a game must use the same value.
+  still on its last route gets the rest of that route instead of a new search,
+  for 24 cells after each search (the game's own re-plan distance), as long as
+  it moved along the route or an order re-send ended its path. A unit whose
+  path ended because it was blocked searches as before. Every player in a game
+  must use the same value.
 
 ## Limits
 
