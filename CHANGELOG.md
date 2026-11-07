@@ -2,6 +2,22 @@
 
 Newest first. Older history is in `git log` and `docs/HANDOFF.md`.
 
+## Unreleased — path continuation: a blocked unit always searches again
+
+**Why:** the walk locomotor ends a unit's path itself when the next cell is
+blocked (`mov [foot+0x5E0],-1` at 0x75B554, 0x75B6D4, 0x75B828, 0x75BA79,
+0x75BB60, 0x75BBC2; e.g. result 6 of the cell check at vtable +0x1AC). If an
+order re-send landed between that and the unit's next ask, the same-cell rule
+above would hand it the blocked route again, and re-sends come every few frames,
+so a blocked unit could keep its route instead of re-planning around the block
+as vanilla does.
+
+**What:** six hooks (`WalkLoco_NoteClear_*`, 10 bytes each, plain stores) mark
+the unit blocked; a blocked unit gets no hand-out until its next real search.
+`PATHREUSE` lines add `blocked` and `loco-clears` counts.
+
+**Consumer action:** none; still off by default.
+
 ## Unreleased — path continuation also hands out from the same cell after an order re-send
 
 **Why:** the first in-game run (30 players, 1000x1000, `ReuseSteps=24`) handed

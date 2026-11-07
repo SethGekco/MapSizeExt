@@ -1360,9 +1360,11 @@ DEFINE_HOOK(42AAFC, AStar_BuildPath_LengthCap, 5)
 //  the last hand-out, or equal to it when an order re-send wiped the path since
 //  then: infantry need tens of frames to cross a cell and the re-sends come
 //  every few frames, so most re-asks come from the same cell (measured: 63% of
-//  asks with progress required). A path ended by anything else -- the walk
-//  locomotor when the next cell is blocked (0x75B6D4/0x75BA79) -- in the same
-//  cell gets a real search, so blocked units still re-plan. Routes through a
+//  asks with progress required). When the walk locomotor ends the path itself
+//  (its six `mov [foot+0x5E0],-1` stores, taken when the next cell is blocked:
+//  vtable +0x1AC result 6 at 0x75B6D4, 4/5 at 0x75BA79, and four more), the
+//  unit gets no hand-out until its next real search, so blocked units re-plan
+//  as in vanilla even while order re-sends keep coming. Routes through a
 //  tunnel (facing 8) are never kept. Every input is synchronized game state
 //  (UniqueID, cells, frame, order calls), so all clients make the same choices;
 //  every player needs the same DLL and ReuseSteps value.
@@ -1406,12 +1408,13 @@ struct PathMemo
     int   steps;     // facings, without the -1 terminator; 0 = empty
     int   served;    // route index the last hand-out started at (0 = none yet)
     int   rewiped;   // an order re-send ended the path since the last hand-out or search
+    int   blocked;   // the locomotor ended the path since the last search: search again
     DWORD type[8];   // the search's PathType; a hand-out keeps the fields it does not set
     BYTE  dirs[(kMaxPathSteps + 1) / 2];   // facings 0..7, two per byte
 };
 static PathMemo* g_PathMemo = nullptr;
 static DWORD g_HandOut[8];   // the PathType a hand-out returns
-static struct { DWORD calls, served, sameCell, stored, kept, none, dest, offRoute, noProgress, evicted, wipes; } g_Reuse;
+static struct { DWORD calls, served, sameCell, stored, kept, none, dest, blocked, offRoute, noProgress, evicted, wipes, locoClears; } g_Reuse;
 
 static inline DWORD GameFrame() { return *reinterpret_cast<DWORD*>(0xA8ED84); }
 static inline int MemoFacing(const PathMemo& m, int i) { return (m.dirs[i >> 1] >> ((i & 1) * 4)) & 0xF; }
@@ -1429,14 +1432,16 @@ DEFINE_HOOK(4CBBF8, FindPath_ContinueRoute, A)
     if (!g_Active || g_ReuseSteps <= 0 || !g_PathMemo) return 0;
     if ((++g_Reuse.calls & 0xFFFF) == 0)
         DeployDiagLog("PATHREUSE calls %u served %u (same cell %u) stored %u | miss: kept %u none %u "
-                      "dest %u off-route %u no-progress %u | evicted %u order-wipes %u\n", g_Reuse.calls,
-                      g_Reuse.served, g_Reuse.sameCell, g_Reuse.stored, g_Reuse.kept, g_Reuse.none,
-                      g_Reuse.dest, g_Reuse.offRoute, g_Reuse.noProgress, g_Reuse.evicted, g_Reuse.wipes);
+                      "dest %u blocked %u off-route %u no-progress %u | evicted %u order-wipes %u "
+                      "loco-clears %u\n", g_Reuse.calls, g_Reuse.served, g_Reuse.sameCell, g_Reuse.stored,
+                      g_Reuse.kept, g_Reuse.none, g_Reuse.dest, g_Reuse.blocked, g_Reuse.offRoute,
+                      g_Reuse.noProgress, g_Reuse.evicted, g_Reuse.wipes, g_Reuse.locoClears);
     const DWORD esp = R->ESP();
     if (*reinterpret_cast<int*>(esp + 0x30) != 0) { ++g_Reuse.kept; return 0; }
     PathMemo* m = FindMemo(*reinterpret_cast<DWORD*>(R->ESI() + 0x10));
     if (!m) { ++g_Reuse.none; return 0; }
     if (m->dest != **reinterpret_cast<DWORD**>(esp + 0x20)) { ++g_Reuse.dest; return 0; }
+    if (m->blocked) { ++g_Reuse.blocked; return 0; }
 
     // Walk the route from its start: is the unit's cell on it, inside the window?
     const DWORD cur = *reinterpret_cast<DWORD*>(esp + 0x8);
@@ -1517,6 +1522,7 @@ DEFINE_HOOK(4D3E50, UpdatePathfinding_RememberRoute, 8)
     m->steps = steps;
     m->served = 0;
     m->rewiped = 0;
+    m->blocked = 0;
     memcpy(m->type, type, sizeof m->type);
     memset(m->dirs, 0, (steps + 1) / 2);
     for (int i = 0; i < steps; ++i)
@@ -1546,6 +1552,25 @@ DEFINE_HOOK(51B2A2, InfantryAssignTarget_NoteWipe, A)
     NoteOrderWipe(R->ESI());
     return 0;
 }
+
+// The walk locomotor's own path ends: each is `mov dword [reg+0x5E0],-1` (10
+// bytes, not relative, nothing branches inside), reg = the unit.
+static void NoteLocoClear(DWORD foot)
+{
+    if (!g_Active || g_ReuseSteps <= 0 || !g_PathMemo) return;
+    if (PathMemo* m = FindMemo(*reinterpret_cast<DWORD*>(foot + 0x10)))
+    {
+        m->blocked = 1;
+        ++g_Reuse.locoClears;
+    }
+}
+// Written out, not by macro: tools/check_hook_*.py read literal DEFINE_HOOK lines.
+DEFINE_HOOK(75B554, WalkLoco_NoteClear_75B554, A) { NoteLocoClear(R->EDX()); return 0; }
+DEFINE_HOOK(75B6D4, WalkLoco_NoteClear_75B6D4, A) { NoteLocoClear(R->EDX()); return 0; }
+DEFINE_HOOK(75B828, WalkLoco_NoteClear_75B828, A) { NoteLocoClear(R->EAX()); return 0; }
+DEFINE_HOOK(75BA79, WalkLoco_NoteClear_75BA79, A) { NoteLocoClear(R->EAX()); return 0; }
+DEFINE_HOOK(75BB60, WalkLoco_NoteClear_75BB60, A) { NoteLocoClear(R->EAX()); return 0; }
+DEFINE_HOOK(75BBC2, WalkLoco_NoteClear_75BBC2, A) { NoteLocoClear(R->ECX()); return 0; }
 
 // ============================================================
 //  CELL-TARGET CODEC CoordBase FIX (root cause of the 2048 order bug).
