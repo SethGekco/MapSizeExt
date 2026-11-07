@@ -1274,6 +1274,60 @@ DEFINE_HOOK(42C712, AStar_HierNodePoolCap, 8)
     return 0x42C71E;                      // store-back mov [esp+0x2C]/[esp+0x30]
 }
 
+// ------------------------------------------------------------------
+//  PATH LENGTH CAP (2,000 steps). Crashes 2026-11-07 (1000x1000, 30
+//  players, ~8-12 min in): C0000005 at 00000000, ESP 0x36D16C, EBP/ESI/EBX
+//  = WalkLocomotionClass +0/+0x1C/+0x28. FootClass::UpdatePathfinding
+//  @0x4D3920 keeps `FacingType path[2000]` at [esp+0x6C] of its 0x1F9C frame,
+//  ending exactly at its own return slot, and passes maxLen 0x7D0 to
+//  Find_Path @0x4CBBA0 -- which never forwards it. The path builder
+//  @0x42AA90 (sole caller 0x42A406) writes all `Length` facings plus a -1
+//  terminator into that buffer, and a parallel array at static 0x89A324
+//  (2,001 slots before the next global). Vanilla maps never make a
+//  2,000-step path; the widened pools above let a cross-map path finish, and
+//  step 2,000 (a facing 0..7) became the return address. Measured Length
+//  2,013 and 2,085. The other A* caller (HouseClass @0x5048A0) has ~2,048
+//  slots, so 2,000 covers both.
+//    0x42AAFC  mov ebp,[esi]      ; goal-end list element (stolen)
+//    0x42AAFE  mov eax,[esi+0xC]  ; Length (stolen)
+//    0x42AB01  mov ebx,[ebp+0x8]  ; resume
+//  ESI = path node, EDX = caller's buffer. Elements link toward the start via
+//  [elem+8]; the loop writes index Length-2 (the step into the goal) down to
+//  0. Dropping the first (Length-2000) goal-end elements keeps the 1,999
+//  steps from the unit's cell; it walks them and re-paths, and
+//  UpdatePathfinding only takes 24 steps per call anyway. Length is written
+//  back to the node (the terminator @0x42ABAF re-reads [esi+0xC]) and to the
+//  PathType copy @0x89A2E0, already filled @0x42AAD7. Nothing branches into
+//  0x42AAFD-0x42AB00 and the stolen bytes are not relative. NO-OP at 512.
+static const int kMaxPathSteps = 2000;
+DEFINE_HOOK(42AAFC, AStar_BuildPath_LengthCap, 5)
+{
+    if (!g_Active) return 0;
+    if (g_MapStride <= 512) return 0;   // vanilla path untouched
+    const DWORD node = R->ESI();
+    DWORD elem = *reinterpret_cast<DWORD*>(node);
+    int len = *reinterpret_cast<int*>(node + 0xC);
+    if (len > kMaxPathSteps)
+    {
+        DWORD cut = elem;
+        for (int i = len - kMaxPathSteps; i > 0 && cut; --i)
+            cut = *reinterpret_cast<DWORD*>(cut + 0x8);
+        if (cut)                          // a short chain would fault in vanilla too; leave it be
+        {
+            static int clamps = 0;
+            if (++clamps <= 20 || clamps % 100 == 0)
+                DeployDiagLog("PATHCAP #%d Length %d -> %d\n", clamps, len, kMaxPathSteps);
+            elem = cut;
+            len = kMaxPathSteps;
+            *reinterpret_cast<int*>(node + 0xC) = len;
+            *reinterpret_cast<int*>(0x89A2E0) = len;
+        }
+    }
+    R->EBP(elem);
+    R->EAX(len);
+    return 0x42AB01;
+}
+
 // ============================================================
 //  CELL-TARGET CODEC CoordBase FIX (root cause of the 2048 order bug).
 //

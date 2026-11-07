@@ -2,6 +2,26 @@
 
 Newest first. Older history is in `git log` and `docs/HANDOFF.md`.
 
+## Unreleased — paths capped at 2,000 steps on big maps
+
+**Why:** 30-player games on `mapsizeext_1000x1000.map` crashed after 8-12
+minutes with `C0000005 at 00000000`, ESP `0x36D16C` (2026-11-07, twice). An
+infantry unit's pathfinding (`FootClass::UpdatePathfinding` @0x4D3920) keeps a
+2,000-step direction buffer on the stack that ends at its own return address.
+The game's path builder (@0x42AA90) writes the whole path into it without a
+length check, and also into a 2,001-slot static array at 0x89A324. Vanilla maps
+never produce a path that long. The widened A* pools let a cross-map path finish
+on a 1000x1000 map (measured 2,013 and 2,085 steps), so step 2,000 overwrote the
+return address with a direction (0-7).
+
+**What:** new hook `AStar_BuildPath_LengthCap` @0x42AAFC. A path longer than
+2,000 steps keeps its first 1,999 steps from the unit and drops the rest. The
+unit walks those and plans again; the game only hands a unit 24 steps at a time,
+so movement does not change. The first 20 cuts, then every 100th, are logged as
+`PATHCAP` lines in `MapSizeExt_deploy.log`. Vanilla-size maps are untouched.
+
+**Consumer action:** none.
+
 ## Unreleased — per-house threat grid sized to the map (`[Debug] PatchThreat=1`)
 
 **Why:** big maps crashed or froze more often the more players there were
