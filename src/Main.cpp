@@ -224,6 +224,7 @@ static void ApplyInit()
             // broad sweep, which stays skipped).
             ApplyModulePatches(f);
             ApplyAntaresPatches(f);
+            if (cfg.PatchThreat) ApplyThreatRegionPatches(f);
             // Compiled crash-guard hooks remain installed via .syhks00.
         }
         else
@@ -238,6 +239,7 @@ static void ApplyInit()
         if (cfg.PatchIterator) ApplyIteratorStridePatches(f); else fprintf(f, "[iter]    DISABLED via INI\n");
         if (cfg.PatchSubzone) ApplySubzoneScalePatches(f); else fprintf(f, "[subzone] DISABLED via INI\n");
         if (cfg.PatchSubzone) ApplySubzoneMovzxPatches(f);
+        if (cfg.PatchThreat)  ApplyThreatRegionPatches(f); else fprintf(f, "[threat]  DISABLED via INI\n");
         ApplyAStarPoolPatches(f);
         if (cfg.PatchRadar)   ApplyRadarPatches(f);        else fprintf(f, "[radar]   DISABLED via INI\n");
         if (cfg.PatchModules) ApplyModulePatches(f);  else fprintf(f, "[dll]     DISABLED via INI\n");
@@ -259,6 +261,7 @@ static void ApplyInit()
             ApplyAntaresIniParseFix(nullptr, cfg.AntaresIniFix);
             ApplyModulePatches(nullptr);
             ApplyAntaresPatches(nullptr);
+            if (cfg.PatchThreat) ApplyThreatRegionPatches(nullptr);
         }
         else
         {
@@ -272,6 +275,7 @@ static void ApplyInit()
         if (cfg.PatchIterator) ApplyIteratorStridePatches(nullptr);
         if (cfg.PatchSubzone) ApplySubzoneScalePatches(nullptr);
         if (cfg.PatchSubzone) ApplySubzoneMovzxPatches(nullptr);
+        if (cfg.PatchThreat)  ApplyThreatRegionPatches(nullptr);
         ApplyAStarPoolPatches(nullptr);
         if (cfg.PatchRadar)   ApplyRadarPatches(nullptr);
         if (cfg.PatchModules) ApplyModulePatches(nullptr);

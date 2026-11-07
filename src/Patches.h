@@ -48,6 +48,10 @@ int ApplyIteratorStridePatches(FILE* log);
 // Subzone hierarchy block scale 4->8 (Krisztiaan handoff): keeps subzone IDs in
 // range on big maps. Radar surface resize 512->1024: enables the minimap.
 int ApplySubzoneScalePatches(FILE* log);
+// Per-house threat grid (HouseClass::ThreatPosedEstimates[130][130]): coarsen
+// MapClass::Cell_Region (gamemd body + Antares' replacement) to 2^(log2(stride)-7)
+// cells so region indices stay inside the grid. Big maps only; no-op at 512.
+int ApplyThreatRegionPatches(FILE* log);
 // A* node-pool 8x widening (heap-corruption fix); no-op at stride 512.
 int ApplyAStarPoolPatches(FILE* log);
 int ApplyRadarPatches(FILE* log);

@@ -627,6 +627,84 @@ int ApplySubzoneScalePatches(FILE* log)
     return n;
 }
 
+// Per-house THREAT grid (the many-players big-map crash, 2026-11-06).
+// HouseClass::ThreatPosedEstimates is an inline unsigned[130][130] at house+0x57E4
+// (YRpp says +0x57E0; the ctor clears 0x4204 dwords from `lea edi,[ebp+0x57E4]`
+// @0x4F61F6). MapClass::Cell_Region @0x56BC50 maps a cell to a 4x4-cell region,
+// (Y/4)*130 + X/4 + 131, and HouseClass::AdjustThreat @0x4FA2E0 adds into
+// region+{-131..+131} of EVERY non-allied house on each threat change
+// (CellClass::AdjustThreat @0x481870). Nothing bounds the top: Antares'
+// HouseClass_SetThreat_Bounds only skips index < 0. Antares also replaces
+// Cell_Region (hook ThreatPosedEstimates_GetIndex @0x56BC54): -1 for X or Y >= 512,
+// but it computes 130*Y/4 rather than (Y/4)*130, so cells at Y 509-511 index up to
+// 97 dwords past the grid. Houses sit back to back on the heap (0x160D8 apart), so
+// those writes land in the NEXT house's vtable and vectors, once per enemy house --
+// more players, more corruption. Proven on 1000x1000: 30 players (start 0 at
+// 513,512, every seat-less house parked there) died at frame 2632 in FindItemIndex
+// on a house whose UnitRepairStations had Items=NULL (a >2 GB pointer the threat
+// code clamps as a negative int) and Count=15; 8 players ran 866 s clean.
+// Fix: regions of 2^s cells, s = log2(stride) - 7, so every coordinate below the
+// stride maps to <= 127 and region+131 <= 16899. That is also the subzone block
+// scale whenever the 4->16 table (stride 2048) or 4->8 table (stride 1024) is used,
+// which keeps the zone-based threat read @0x5862A2 on the same grid.
+int ApplyThreatRegionPatches(FILE* log)
+{
+    const int shift = Log2Exact(g_MapStride) - 7;          // 1024 -> 3, 2048 -> 4
+    if (g_MapStride <= 512 || shift < 3)
+    {
+        if (log) fprintf(log, "[threat]  house threat regions stay 4-cell  [no-op]\n");
+        return 0;
+    }
+    const BYTE s = static_cast<BYTE>(shift);
+    const BYTE m = static_cast<BYTE>((1 << shift) - 1);
+
+    // gamemd's own body (runs when Antares is absent): rounding mask + shift, Y then X.
+    const ByteEdit body[] = {
+        {0x56BC5A,3,{0x83,0xe2,0x03},{0x83,0xe2,m}},
+        {0x56BC5F,3,{0xc1,0xf8,0x02},{0xc1,0xf8,s}},
+        {0x56BC6D,3,{0x83,0xe2,0x03},{0x83,0xe2,m}},
+        {0x56BC72,3,{0xc1,0xf8,0x02},{0xc1,0xf8,s}},
+    };
+    const int nb = ApplyByteEdits(body, 4, log, "threat");
+
+    // Antares' replacement handler (RVA 0x6FD90): bound `mov edx,0x200` -> stride,
+    // and the 37-byte formula block rewritten. X and Y are already checked to be in
+    // [0, bound) there, so the rewrite needs no rounding fix-ups.
+    int na = 0;
+    const HMODULE h = GetModuleHandleA("Antares.dll");
+    if (h)
+    {
+        const DWORD base = reinterpret_cast<DWORD>(h);
+        na += PatchImm32(base + 0x6FDAD, 1, 0x200, static_cast<DWORD>(g_MapStride));
+        static const BYTE expect[37] = {
+            0x98, 0x69,0xc0,0x82,0x00,0x00,0x00, 0x99, 0x83,0xe2,0x03, 0x8d,0x0c,0x02,
+            0x0f,0xbf,0xc6, 0x99, 0x83,0xe2,0x03, 0xc1,0xf9,0x02, 0x03,0xc2,
+            0x81,0xc1,0x83,0x00,0x00,0x00, 0xc1,0xf8,0x02, 0x03,0xc8 };
+        const BYTE code[] = {
+            0xc1,0xf8,s,                          // sar   eax,s           Y >> s
+            0x69,0xc8,0x82,0x00,0x00,0x00,        // imul  ecx,eax,130
+            0x0f,0xbf,0xc6,                       // movsx eax,si          X
+            0xc1,0xf8,s,                          // sar   eax,s
+            0x8d,0x8c,0x01,0x83,0x00,0x00,0x00 }; // lea   ecx,[ecx+eax+0x83]
+        BYTE repl[sizeof(expect)];
+        memset(repl, 0x90, sizeof(repl));
+        memcpy(repl, code, sizeof(code));
+        void* p = reinterpret_cast<void*>(base + 0x6FDBC);
+        DWORD old = 0;
+        if (memcmp(p, expect, sizeof(expect)) == 0
+            && VirtualProtect(p, sizeof(repl), PAGE_EXECUTE_READWRITE, &old))
+        {
+            memcpy(p, repl, sizeof(repl));
+            VirtualProtect(p, sizeof(repl), old, &old);
+            ++na;
+        }
+        else if (log) fprintf(log, "[threat] SKIP Antares region formula: bytes differ\n");
+    }
+    if (log) fprintf(log, "[threat]  house threat regions 4 -> %d cells (max index 16899) : gamemd %d/4, Antares %s\n",
+                     1 << shift, nb, h ? (na == 2 ? "2/2" : "INCOMPLETE") : "not loaded");
+    return nb + na;
+}
+
 // RADAR/minimap surfaces. Vanilla draws the minimap into a 400x640 surface
 // (buffer 400*640*2 = 0x7D000 bytes) and gates its creation on `cmp dim,512`.
 // Both scale LINEARLY with the plane: at stride 1024 the surface doubled to

@@ -43,6 +43,7 @@ struct MapSizeConfig
     int PatchIterator;    // full-map cell-iterator byte-stride (walk-on-water/pathing fix)
     int PatchCrashGuard;  // GetCellAt garbage-slot guard (flying-unit crash fix)
     int PatchSubzone;     // subzone hierarchy block scale 4->8 (Krisztiaan handoff)
+    int PatchThreat;      // per-house threat-grid regions coarsened to fit the stride
     int PatchRadar;       // radar/minimap surface resize 512->1024 (Krisztiaan handoff)
     int PatchIso;         // EXPERIMENTAL tactical-render iso cell sites (default 0)
 
@@ -95,6 +96,7 @@ inline MapSizeConfig ReadConfig()
     cfg.PatchIterator  = GetPrivateProfileIntA("Debug", "PatchIterator",  1, iniPath);
     cfg.PatchCrashGuard= GetPrivateProfileIntA("Debug", "PatchCrashGuard",1, iniPath);
     cfg.PatchSubzone   = GetPrivateProfileIntA("Debug", "PatchSubzone",   1, iniPath);
+    cfg.PatchThreat    = GetPrivateProfileIntA("Debug", "PatchThreat",    1, iniPath);
     cfg.PatchRadar     = GetPrivateProfileIntA("Debug", "PatchRadar",     1, iniPath);
     cfg.PatchIso       = GetPrivateProfileIntA("Debug", "PatchIso",       0, iniPath);
     cfg.CuratedBase    = GetPrivateProfileIntA("Debug", "CuratedBase",    0, iniPath);
