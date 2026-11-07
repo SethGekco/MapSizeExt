@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstdarg>
+#include <cstring>
 
 // ============================================================
 //  Hooks.cpp  -  Phase 1: cell-grid stride, bounds and the
@@ -41,6 +42,7 @@ int g_CoordBase       = 1000;    // per-map cell-number base (1000 = vanilla)
 int g_RadarScale      = 1;
 int g_RadarEvents     = 1;       // [Debug] RadarEvents: 0 = suppress pulses on big maps       // 1 = radar surface untouched (vanilla behaviour)
 int g_DiagVerbose     = 0;       // hot per-call trace logs off by default (file I/O = lag)
+int g_ReuseSteps      = 0;       // [Path] ReuseSteps: path continuation window, 0 = off
 
 // ============================================================
 //  HOOK A: MapClass::operator[](Cell&)  @ 0x5656EA (7 bytes)
@@ -1332,6 +1334,180 @@ DEFINE_HOOK(42AAFC, AStar_BuildPath_LengthCap, 5)
     R->EBP(elem);
     R->EAX(len);
     return 0x42AB01;
+}
+
+// ============================================================
+//  PATH CONTINUATION ([Path] ReuseSteps=24; default 0 = off; big maps only). Speed.
+//
+//  Measured 2026-11-07 (30 players on 1000x1000, PerfExt profiles and path
+//  meter): unit pathfinding took 52-58% of the game thread in 30-minute
+//  games, about 90% of it in the cell A* @0x429A90, all of it for infantry.
+//  The searches are not slow, they are repeated: an infantry unit attacking a
+//  far target has SetDestination/AssignTarget re-sent about once per cell
+//  (FootClass::ApproachTarget @0x4D68B7, team code @0x6EB801/0x6EBE5C,
+//  SquadExt), and each re-send wipes PathDirections (InfantryClass::
+//  SetDestination @0x51AD11, AssignTarget @0x51B2A2). The walk locomotor
+//  @0x75AF1D then calls FootClass::UpdatePathfinding(dest,0,0) @0x4D3920,
+//  which searches the WHOLE route again (300-1,990 steps on that map) to copy
+//  out its first 24 facings.
+//
+//  Fix: remember each unit's last full route. When the same unit asks again
+//  for the same destination cell with no kept steps, and it stands on that
+//  route at index j -- further along than at its last hand-out, and fewer than
+//  ReuseSteps cells from where the search started -- it gets the rest of the
+//  route instead of a search. That is the route it would have walked had the
+//  re-send not wiped it, and the game's 24-cell re-plan horizon stays: past it
+//  the unit searches as before. A blocked unit has not moved on, so it gets a
+//  real search. Routes through a tunnel (facing 8) are never kept. Every input
+//  is synchronized game state (UniqueID, cells, frame), so all clients make
+//  the same choices; every player needs the same DLL and ReuseSteps value.
+//
+//  Find_Path @0x4CBBA0 (sole caller UpdatePathfinding @0x4D3E4B):
+//    0x4CBBF8  mov ecx,[esp+0x30]     ; kept steps   (stolen; jne target)
+//    0x4CBBFC  lea eax,[esi+0x5E0]    ; &PathDirections (stolen)
+//    0x4CBC02  push eax ... 0x4CBC31 call AStarClass::FindPath
+//    0x4CBC36  pop edi; pop esi; add esp,0x14; ret 0x18
+//  At the seat ESP is the frame base: ESI = unit, EDI = the caller's facing
+//  buffer (2,000 slots), [esp+0x8] = the unit's cell, [esp+0x20] = &dest,
+//  [esp+0x30] = kept. A hand-out fills the buffer and returns its PathType at
+//  0x4CBC36, as the A* would. The skipped 0x429780 only moves the start cell
+//  past the kept steps, and there are none here.
+//  UpdatePathfinding reads the PathType for TotalDistance != 0 (0x4D3E5A),
+//  min(Length, 24-kept) facings to copy (0x4D3E82), buf[Length-2] for team
+//  followers (0x4D3EEB), and passes a copy to vtable slot 0x540 (0x41C140,
+//  `ret 4`, for infantry and vehicles). The A*'s own PathType is 0x89A2D8:
+//  StartCell, TotalDistance, Length (with the -1), Directions = the buffer,
+//  0, Levels 0x89A324, two zero words.
+//  Routes are stored right after the call @0x4D3E50 (8 stolen bytes, `mov
+//  edi,eax; test edi,edi; mov [esp+0x14],edi`, no relative operand, nothing
+//  branches into 0x4D3E51-57): EAX = PathType or 0, EBP = unit, EBX = kept,
+//  [esp+0x6C] = the facings, [esp+0x1FB0] = the destination cell.
+//  The table (2 ways x 8,192 sets, facings packed two per byte, 17 MB) is
+//  allocated on the first search of a big-map game. NO-OP at 512.
+// ============================================================
+static const int kMemoSets = 8192;
+struct PathMemo
+{
+    DWORD id;        // AbstractClass::UniqueID (+0x10) of the unit
+    DWORD dest;      // packed destination cell the search was for
+    DWORD start;     // packed cell the search started from
+    DWORD frame;     // frame of the last search or hand-out (which way to replace)
+    int   steps;     // facings, without the -1 terminator; 0 = empty
+    int   served;    // route index the last hand-out started at (0 = none yet)
+    DWORD type[8];   // the search's PathType; a hand-out keeps the fields it does not set
+    BYTE  dirs[(kMaxPathSteps + 1) / 2];   // facings 0..7, two per byte
+};
+static PathMemo* g_PathMemo = nullptr;
+static DWORD g_HandOut[8];   // the PathType a hand-out returns
+static struct { DWORD calls, served, stored, kept, none, dest, offRoute, noProgress, evicted; } g_Reuse;
+
+static inline DWORD GameFrame() { return *reinterpret_cast<DWORD*>(0xA8ED84); }
+static inline int MemoFacing(const PathMemo& m, int i) { return (m.dirs[i >> 1] >> ((i & 1) * 4)) & 0xF; }
+
+static PathMemo* FindMemo(DWORD id)
+{
+    PathMemo* set = g_PathMemo + (id & (kMemoSets - 1)) * 2;
+    if (set[0].steps && set[0].id == id) return &set[0];
+    if (set[1].steps && set[1].id == id) return &set[1];
+    return nullptr;
+}
+
+DEFINE_HOOK(4CBBF8, FindPath_ContinueRoute, A)
+{
+    if (!g_Active || g_ReuseSteps <= 0 || !g_PathMemo) return 0;
+    if ((++g_Reuse.calls & 0xFFFF) == 0)
+        DeployDiagLog("PATHREUSE calls %u served %u stored %u | miss: kept %u none %u dest %u "
+                      "off-route %u no-progress %u | evicted %u\n", g_Reuse.calls, g_Reuse.served,
+                      g_Reuse.stored, g_Reuse.kept, g_Reuse.none, g_Reuse.dest, g_Reuse.offRoute,
+                      g_Reuse.noProgress, g_Reuse.evicted);
+    const DWORD esp = R->ESP();
+    if (*reinterpret_cast<int*>(esp + 0x30) != 0) { ++g_Reuse.kept; return 0; }
+    PathMemo* m = FindMemo(*reinterpret_cast<DWORD*>(R->ESI() + 0x10));
+    if (!m) { ++g_Reuse.none; return 0; }
+    if (m->dest != **reinterpret_cast<DWORD**>(esp + 0x20)) { ++g_Reuse.dest; return 0; }
+
+    // Walk the route from its start: is the unit's cell on it, inside the window?
+    const DWORD cur = *reinterpret_cast<DWORD*>(esp + 0x8);
+    const short* delta = reinterpret_cast<const short*>(0x89F688);   // X,Y per facing
+    short x = static_cast<short>(m->start & 0xFFFF), y = static_cast<short>(m->start >> 16);
+    const int window = g_ReuseSteps < m->steps ? g_ReuseSteps : m->steps;
+    int j = m->start == cur ? 0 : -1;
+    for (int i = 1; j < 0 && i < window; ++i)
+    {
+        const int f = MemoFacing(*m, i - 1);
+        x += delta[f * 2];
+        y += delta[f * 2 + 1];
+        if ((static_cast<DWORD>(static_cast<WORD>(x)) | static_cast<DWORD>(static_cast<WORD>(y)) << 16) == cur)
+            j = i;
+    }
+    if (j < 0) { ++g_Reuse.offRoute; return 0; }
+    if (j <= m->served) { ++g_Reuse.noProgress; return 0; }
+
+    DWORD* buf = reinterpret_cast<DWORD*>(R->EDI());
+    const int n = m->steps - j;            // >= 1: j < window <= steps
+    for (int i = 0; i < n; ++i)
+        buf[i] = MemoFacing(*m, j + i);
+    buf[n] = 0xFFFFFFFF;
+    const int total = static_cast<int>(static_cast<long long>(static_cast<int>(m->type[1])) * n / m->steps);
+    memcpy(g_HandOut, m->type, sizeof g_HandOut);
+    g_HandOut[0] = cur;                                  // StartCell
+    g_HandOut[1] = total > 0 ? total : 1;                // TotalDistance, pro rata (must be != 0)
+    g_HandOut[2] = n + 1;                                // Length, with the -1
+    g_HandOut[3] = R->EDI();                             // Directions
+    m->served = j;
+    m->frame = GameFrame();
+    ++g_Reuse.served;
+    R->EAX(reinterpret_cast<DWORD>(g_HandOut));
+    return 0x4CBC36;
+}
+
+DEFINE_HOOK(4D3E50, UpdatePathfinding_RememberRoute, 8)
+{
+    if (!g_Active || g_ReuseSteps <= 0) return 0;
+    const DWORD* type = reinterpret_cast<const DWORD*>(R->EAX());
+    if (type == g_HandOut) return 0;
+    if (!g_PathMemo)
+    {
+        g_PathMemo = static_cast<PathMemo*>(VirtualAlloc(nullptr, sizeof(PathMemo) * kMemoSets * 2,
+                                                          MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+        DeployDiagLog("PATHREUSE ReuseSteps %d, %d routes, %u KB: %s\n", g_ReuseSteps, kMemoSets * 2,
+                      static_cast<unsigned>(sizeof(PathMemo) * kMemoSets * 2 / 1024),
+                      g_PathMemo ? "on" : "allocation failed, off");
+        if (!g_PathMemo) { g_ReuseSteps = 0; return 0; }
+    }
+    const DWORD id = *reinterpret_cast<DWORD*>(R->EBP() + 0x10);
+    PathMemo* m = FindMemo(id);
+
+    // A search that cannot be kept (kept steps, no path, tunnel) also drops the old route.
+    const int* buf = reinterpret_cast<const int*>(R->ESP() + 0x6C);
+    const int steps = type ? static_cast<int>(type[2]) - 1 : 0;
+    bool keep = type && type[1] != 0 && R->EBX() == 0 && steps >= 1 && steps <= kMaxPathSteps
+                && buf[steps] == -1;
+    for (int i = 0; keep && i < steps; ++i)
+        keep = static_cast<unsigned>(buf[i]) < 8;
+    if (!keep)
+    {
+        if (m) m->steps = 0;
+        return 0;
+    }
+    if (!m)
+    {
+        PathMemo* set = g_PathMemo + (id & (kMemoSets - 1)) * 2;
+        m = !set[0].steps ? &set[0] : !set[1].steps ? &set[1] : set[0].frame <= set[1].frame ? &set[0] : &set[1];
+        if (m->steps) ++g_Reuse.evicted;
+    }
+    m->id = id;
+    m->dest = *reinterpret_cast<DWORD*>(R->ESP() + 0x1FB0);
+    m->start = type[0];
+    m->frame = GameFrame();
+    m->steps = steps;
+    m->served = 0;
+    memcpy(m->type, type, sizeof m->type);
+    memset(m->dirs, 0, (steps + 1) / 2);
+    for (int i = 0; i < steps; ++i)
+        m->dirs[i >> 1] |= static_cast<BYTE>(buf[i] << ((i & 1) * 4));
+    ++g_Reuse.stored;
+    return 0;
 }
 
 // ============================================================

@@ -60,6 +60,7 @@ struct MapSizeConfig
     int DiagVerbose;
     int AntaresIniFix;
     int RadarEvents;
+    int ReuseSteps;     // [Path] ReuseSteps: path continuation window (Hooks.cpp), 0 = off
 
     int Total() const { return Stride * Stride; }
 };
@@ -113,6 +114,12 @@ inline MapSizeConfig ReadConfig()
     // Radar event pulses on big maps. 1 = draw with the position fix,
     // 0 = suppress them entirely (the pre-2026-09-24 behaviour).
     cfg.RadarEvents    = GetPrivateProfileIntA("Debug", "RadarEvents",    1, iniPath);
+    // Path continuation on big maps: a unit whose route was wiped while it
+    // walks it gets the rest of that route back instead of a new search, for
+    // the first ReuseSteps cells after a search (24 = the steps the game hands
+    // out per search). 0 = off (default until measured in-game). Every player
+    // in a game needs the same value.
+    cfg.ReuseSteps     = GetPrivateProfileIntA("Path",  "ReuseSteps",     0, iniPath);
 
     // Clamp: never go below the vanilla values.
     if (cfg.Stride       < 512) cfg.Stride       = 512;

@@ -2,6 +2,31 @@
 
 Newest first. Older history is in `git log` and `docs/HANDOFF.md`.
 
+## Unreleased — path continuation on big maps (`[Path] ReuseSteps`, default off)
+
+**Why:** in 30-player games on `mapsizeext_1000x1000.map`, unit pathfinding
+took 52-58% of the game thread over 30 minutes (PerfExt profiles, 2026-11-07),
+about 90% of it the cell A* @0x429A90, all of it for infantry. A path meter
+showed the searches are repeated, not slow: an infantry unit attacking a far
+target has SetDestination/AssignTarget re-sent about once per cell, each re-send
+wipes its 24-step path, and `FootClass::UpdatePathfinding` @0x4D3920 then
+searches the whole route across the map again (300-1,990 steps).
+
+**What:** two hooks, active only at stride > 512 and `ReuseSteps > 0`.
+`UpdatePathfinding_RememberRoute` @0x4D3E50 keeps each unit's last full route
+(2 x 8,192 slots by UniqueID, 17 MB, allocated on the first search).
+`FindPath_ContinueRoute` @0x4CBBF8 hands a unit the rest of that route instead
+of searching when it asks again for the same destination cell with no kept
+steps, stands on the route further along than at its last hand-out, and is
+fewer than `ReuseSteps` cells from where the search started. Past that window,
+or when the unit is blocked (no progress), it searches as before. Routes through
+a tunnel are never kept. `PATHREUSE` lines in `MapSizeExt_deploy.log` count
+hand-outs and misses every 65,536 calls.
+
+**Consumer action:** none; off by default. To try it, set `[Path] ReuseSteps=24`.
+All players in a game need the same value (the choices use only synchronized
+state, so equal settings stay in sync).
+
 ## Unreleased — path cap lowered to 1,990 steps (the 2,000 cap still crashed)
 
 **Why:** with the 2,000 cap, a 30-player 1000x1000 game crashed at 1,163 s with

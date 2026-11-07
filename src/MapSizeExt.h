@@ -88,6 +88,7 @@ extern int g_CoordBase;
 extern int g_RadarScale;       // radar surface multiplier actually applied (1 = vanilla)
 extern int g_RadarEvents;      // 1 = draw radar event pulses, 0 = suppress them
 extern int g_DiagVerbose;      // per-call trace logging (PATH/ENC/DEC/REVEAL), default 0
+extern int g_ReuseSteps;       // [Path] ReuseSteps: path continuation window, 0 = off (Hooks.cpp)
 
 // --- Vanilla [Waypoints] reader cell-number decode (base 1000) ----
 // 68BE0C: mov ebp,0x3e8 ; idiv -> X=N%1000, then Y=N/1000 recomputed via the
