@@ -6,6 +6,10 @@
 //  Reads MAPSIZEEXT.INI from the game directory.
 //
 //  [MapSize]
+//  Auto=1            ; pick the stride per launch from the map being loaded
+//                    ; (spawn.ini Scenario= file, [Map] Size); a map that fits
+//                    ; the vanilla 512 grid gets stride 512 = no patches at all.
+//                    ; Auto=0 uses Stride/MaxDimension below for every map.
 //  Stride=512        ; cell-array row stride (power of 2, >=512)
 //  MaxDimension=512  ; per-axis engine gate (replaces cmp ax,0x200)
 //  MaxWidth=512      ; informational
@@ -19,6 +23,7 @@
 
 struct MapSizeConfig
 {
+    int Auto;           // 1 = stride chosen per launch from the map (Main.cpp)
     int Stride;
     int MaxWidth;
     int MaxHeight;
@@ -73,6 +78,7 @@ inline MapSizeConfig ReadConfig()
     if (slash) *(slash + 1) = '\0';
     strcat_s(iniPath, "MAPSIZEEXT.INI");
 
+    cfg.Auto         = GetPrivateProfileIntA("MapSize", "Auto",         1,   iniPath);
     cfg.Stride       = GetPrivateProfileIntA("MapSize", "Stride",       512, iniPath);
     cfg.MaxWidth     = GetPrivateProfileIntA("MapSize", "MaxWidth",     512, iniPath);
     cfg.MaxHeight    = GetPrivateProfileIntA("MapSize", "MaxHeight",    512, iniPath);

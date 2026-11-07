@@ -31,10 +31,132 @@ static void PatchDword(DWORD va, DWORD value)
     }
 }
 
+static void GameDir(char (&out)[MAX_PATH])
+{
+    GetModuleFileNameA(nullptr, out, MAX_PATH);
+    char* slash = strrchr(out, '\\');
+    if (slash) *(slash + 1) = '\0';
+}
+
+// ------------------------------------------------------------
+//  Which map is this launch loading? The CnCNet client writes spawn.ini and
+//  the scenario it names (normally spawnmap.ini) before it starts gamemd, so
+//  both are on disk when DllMain runs. One pass over the scenario collects the
+//  two things the vanilla engine cannot exceed:
+//    [Map] Size=x,y,W,H  - cells run 1..W+H-1 on both axes (measured on real and
+//                          generated maps), so the grid stride must be >= W+H.
+//    [IsoMapPack5]       - gamemd reads the base64-decoded (still LZO-packed)
+//                          bytes into a 400*640*2 = 512,000-byte buffer
+//                          (0x4AD343..0x4AD687); more than that does not fit.
+// ------------------------------------------------------------
+struct ScenarioSize
+{
+    bool  known = false;
+    int   x = 0, y = 0, w = 0, h = 0;
+    DWORD isoBytes = 0;              // base64-decoded [IsoMapPack5] length
+    char  name[MAX_PATH] = "";       // scenario file, for the log
+    const char* why = "";            // why the size is unknown
+};
+
+static ScenarioSize ReadScenarioSize()
+{
+    ScenarioSize ss;
+    char dir[MAX_PATH];
+    GameDir(dir);
+
+    char spawn[MAX_PATH];
+    strcpy_s(spawn, dir);
+    strcat_s(spawn, "spawn.ini");
+    if (GetFileAttributesA(spawn) == INVALID_FILE_ATTRIBUTES) { ss.why = "no spawn.ini"; return ss; }
+
+    // A saved-game load names no real map: the client writes a 50x50 stub
+    // spawnmap.ini and the map comes out of the save file.
+    char yn[8] = "";
+    GetPrivateProfileStringA("Settings", "LoadSaveGame", "", yn, sizeof(yn), spawn);
+    if (yn[0] && strchr("YyTt1", yn[0])) { ss.why = "saved-game load"; return ss; }
+
+    GetPrivateProfileStringA("Settings", "Scenario", "spawnmap.ini", ss.name, sizeof(ss.name), spawn);
+    char path[MAX_PATH];
+    strcpy_s(path, dir);
+    strcat_s(path, ss.name);
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "rb") != 0 || !f) { ss.why = "scenario not a loose file"; return ss; }  // e.g. a campaign map in a MIX
+    setvbuf(f, nullptr, _IOFBF, 1 << 16);
+
+    char line[4096];
+    bool lineStart = true;
+    int  section = 0;                // 1 = [Map], 2 = [IsoMapPack5]
+    DWORD b64 = 0;
+    while (fgets(line, sizeof(line), f))
+    {
+        const size_t len = strlen(line);
+        const bool first = lineStart;           // false = tail of an over-long line
+        lineStart = len && line[len - 1] == '\n';
+        const char* p = line;
+        if (first)
+        {
+            while (*p == ' ' || *p == '\t') ++p;
+            if (*p == '[')
+            {
+                section = !_strnicmp(p, "[Map]", 5) ? 1 : !_strnicmp(p, "[IsoMapPack5]", 13) ? 2 : 0;
+                continue;
+            }
+            if (section == 1 && !ss.known && !_strnicmp(p, "Size=", 5))
+                ss.known = sscanf_s(p + 5, "%d,%d,%d,%d", &ss.x, &ss.y, &ss.w, &ss.h) == 4
+                           && ss.w > 0 && ss.h > 0;
+            if (section != 2 || !(p = strchr(p, '='))) continue;
+            ++p;                                // value of "N=<base64>"
+        }
+        else if (section != 2) continue;
+        for (; *p; ++p)
+            if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+                (*p >= '0' && *p <= '9') || *p == '+' || *p == '/')
+                ++b64;
+    }
+    fclose(f);
+    ss.isoBytes = b64 * 3 / 4;
+    if (!ss.known) ss.why = "no [Map] Size in scenario";
+    return ss;
+}
+
+// Smallest grid stride that holds the map; 512 = vanilla = the DLL stays inert.
+static int StrideForMap(const ScenarioSize& ss)
+{
+    if (!ss.known) return 512;
+    const int need = ss.w + ss.h;
+    if (need <= 512 && ss.isoBytes <= 512000) return 512;
+    return need <= 1024 ? 1024 : 2048;
+}
+
 // One-time init, run in gamemd's process from DllMain.
 static void ApplyInit()
 {
     MapSizeConfig cfg = ReadConfig();
+    const ScenarioSize map = ReadScenarioSize();
+
+    // The decision, as the first (on a vanilla-size map, the only) log line.
+    char decision[768];
+    char mapDesc[400];               // scenario name (<= MAX_PATH) + ~80 chars
+    if (map.known)
+        sprintf_s(mapDesc, "%s map %d,%d,%d,%d (W+H=%d, IsoMapPack5 %lu bytes)", map.name,
+                  map.x, map.y, map.w, map.h, map.w + map.h, map.isoBytes);
+    else
+        sprintf_s(mapDesc, "map size unknown (%s)", map.why);
+    if (cfg.Auto)
+    {
+        cfg.Stride = cfg.MaxDimension = cfg.MaxWidth = cfg.MaxHeight = StrideForMap(map);
+        if (cfg.Stride == 512)
+            sprintf_s(decision, "MapSizeExt: %s fits vanilla (W+H <= 512, IsoMapPack5 <= 512000) "
+                                "-> stride 512, NO patches, every hook passes through", mapDesc);
+        else
+            sprintf_s(decision, "MapSizeExt: %s exceeds vanilla -> stride %d, patch set applied%s", mapDesc,
+                      cfg.Stride, map.w + map.h > 2048 ? "  WARNING: W+H > 2048, the largest stride -- will not load" : "");
+    }
+    else
+        sprintf_s(decision, "MapSizeExt: [MapSize] Auto=0 -> stride %d from MAPSIZEEXT.INI for %s -> %s",
+                  cfg.Stride, mapDesc, cfg.Stride > 512 ? "patch set applied" : "NO patches, every hook passes through");
+
+    g_Active          = cfg.Stride > 512;
     g_MapStride       = cfg.Stride;
     g_MapTotal        = cfg.Total();     // Stride * Stride
     g_MapMaxW         = cfg.MaxWidth;
@@ -47,11 +169,28 @@ static void ApplyInit()
     g_RadarEvents     = cfg.RadarEvents;
     g_CuratedBase     = cfg.CuratedBase;
 
-    // IsoMapPack5 decode-buffer bump: original 400x640x2. The buffer is indexed
-    // by (rx,ry) up to W+H-1, which for a stride-N map is <= N-1. Size it to the
-    // stride (+64 margin) so it auto-scales: 768x1024 (fixed) was only enough for
-    // ~W+H<=767 (300x300 rx<=599 ok; 500x500 rx<=999 OVERFLOWED at width 768).
-    const DWORD isoDim  = (g_MapStride > 512 ? g_MapStride : 640u) + 64u;
+    char logPath[MAX_PATH];
+    GameDir(logPath);
+    strcat_s(logPath, "MapSizeExt.log");
+
+    FILE* f = nullptr;
+    fopen_s(&f, logPath, "w");
+    if (f) fprintf(f, "%s\n", decision);
+
+    // Vanilla-size map: touch nothing -- no byte patch, no crash watcher.
+    if (!g_Active)
+    {
+        if (f) fclose(f);
+        return;
+    }
+
+    // IsoMapPack5 read-buffer bump: original 400x640x2 = 512,000 bytes, and it
+    // holds the base64-decoded (still packed) section, so it is the section's
+    // byte length that must fit. Size it to the stride (+64 margin), then grow
+    // it if this map's data needs more (a 500x500 map can carry 2.4 MB, past
+    // stride 1024's 1088x1088x2).
+    DWORD isoDim = (g_MapStride > 512 ? g_MapStride : 640u) + 64u;
+    while (isoDim * isoDim * 2 < map.isoBytes) isoDim += 64u;
     const DWORD isoW = isoDim, isoH = isoDim, isoBytes = isoW * isoH * 2;
     PatchDword(ADDR_ISOPACK_W_IMM,     isoW);
     PatchDword(ADDR_ISOPACK_H_IMM,     isoH);
@@ -61,14 +200,6 @@ static void ApplyInit()
     // reported too. It only observes -- see CrashWatch.cpp.
     InstallCrashWatch();
 
-    char logPath[MAX_PATH];
-    GetModuleFileNameA(nullptr, logPath, MAX_PATH);
-    char* slash = strrchr(logPath, '\\');
-    if (slash) *(slash + 1) = '\0';
-    strcat_s(logPath, "MapSizeExt.log");
-
-    FILE* f = nullptr;
-    fopen_s(&f, logPath, "w");
     if (f)
     {
         fprintf(f, "MapSizeExt v0.3 (init in-game via DllMain)\n");

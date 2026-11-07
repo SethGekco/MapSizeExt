@@ -22,12 +22,12 @@
 //    fall inside [hook, hook+size) or you land in the trampoline.
 //    Return an address >= hook+size, or a completely different one.
 //
-//  On a standard 512-stride map every hook below reduces to the
-//  original behaviour, so the DLL is a no-op until the INI raises
-//  Stride / MaxDimension above 512.
+//  Every hook opens with a g_Active check: on a map that fits the
+//  vanilla 512 grid the DLL is inert (see MapSizeExt.h g_Active).
 // ============================================================
 
-// Global runtime values - set in SyringeHandshake (Main.cpp)
+// Global runtime values - set in DllMain (Main.cpp ApplyInit)
+int g_Active          = 0;       // 0 = vanilla-size map: no patches, hooks pass through
 int g_MapStride       = 512;
 int g_MapTotal        = 262144;  // 512 * 512
 int g_CrashGuard      = 1;       // GetCellAt garbage-slot guard (INI PatchCrashGuard)
@@ -223,6 +223,7 @@ static void DumpVisibleCellsLighting()
 // ============================================================
 DEFINE_HOOK(48EB12, MapClass_Alloc_Stride1, 6)
 {
+    if (!g_Active) return 0;
     // DEFER ALWAYS (§2.14): this shl-9 is NOT the cell plane -- it is a
     // shroud/visibility buffer row size. Sizing it to *1024 over-sizes a shared
     // draw/palette buffer -> BRIGHT sidebar cameos (broad mode) and the curated
@@ -241,6 +242,7 @@ DEFINE_HOOK(48EB12, MapClass_Alloc_Stride1, 6)
 // ============================================================
 DEFINE_HOOK(48EB35, MapClass_Alloc_Stride2, 5)
 {
+    if (!g_Active) return 0;
     // DEFER ALWAYS -- paired with 0x48EB12 (see there). Original N*512 mid-row
     // pointer keeps the shroud buffer native-sized -> correct sidebar / no stripe.
     return 0;
@@ -262,6 +264,14 @@ DEFINE_HOOK(48EB35, MapClass_Alloc_Stride2, 5)
 // ============================================================
 DEFINE_HOOK(483B32, MapClass_InlineAccess_Stride, 6)
 {
+    // Inert: size 6 ends inside the 6-byte mov, so `return 0` would resume
+    // mid-instruction. Replay both original instructions instead.
+    if (!g_Active)
+    {
+        R->EDI(R->EDI() << 9);                              // shl edi,0x9
+        *reinterpret_cast<int*>(R->ESI() + 0xFC) = R->EBX(); // mov [esi+0xfc],ebx
+        return 0x483B3B;
+    }
     // NOTE: needed at 1024 even in curated mode -- this is a cell-store; at 512
     // it registers foundation cells wrong (1-cell building). Only the shroud-
     // buffer alloc hooks 0x48EB12/35 defer in curated mode (they caused the stripe).
@@ -298,10 +308,16 @@ static void FactoryVtableSentinel();  // defined after DeployDiagLog below
 //  produces, so the simplification is safe here.
 // ============================================================
 
+// Inert: the stolen bytes are the relative `jge` (Syringe would replay it
+// unrelocated), so each site replays vanilla's `cmp ax,0x200 ; jge` itself and
+// resumes on the very next original instruction -- the height check included.
+// Both targets set their own flags before reading any.
+
 // Site 1: hook the 6-byte `jge 0x4C588B` at 0x4C5630.
 //   reject -> 0x4C588B, accept -> 0x4C564A
 DEFINE_HOOK(4C5630, MapDimGate_Site1, 6)
 {
+    if (!g_Active) return (short)R->AX() >= 0x200 ? 0x4C588B : 0x4C5636;
     if ((short)R->AX() >= (short)g_MapMaxDimension) return 0x4C588B;
     if ((short)R->CX() >= (short)g_MapMaxDimension) return 0x4C588B;
     return 0x4C564A;
@@ -312,6 +328,7 @@ DEFINE_HOOK(4C5630, MapDimGate_Site1, 6)
 //   reject -> 0x4C5972, accept -> 0x4C5920
 DEFINE_HOOK(4C590E, MapDimGate_Site2, 6)
 {
+    if (!g_Active) return (short)R->AX() >= 0x200 ? 0x4C5972 : 0x4C5914;
     if ((short)R->AX() >= (short)g_MapMaxDimension) return 0x4C5972;
     if ((short)R->CX() >= (short)g_MapMaxDimension) return 0x4C5972;
     return 0x4C5920;
@@ -321,6 +338,7 @@ DEFINE_HOOK(4C590E, MapDimGate_Site2, 6)
 //   reject -> 0x554CE4, accept -> 0x554BDF
 DEFINE_HOOK(554BC5, MapDimGate_Site3, 6)
 {
+    if (!g_Active) return (short)R->AX() >= 0x200 ? 0x554CE4 : 0x554BCB;
     if ((short)R->AX() >= (short)g_MapMaxDimension) return 0x554CE4;
     if ((short)R->CX() >= (short)g_MapMaxDimension) return 0x554CE4;
     return 0x554BDF;
@@ -350,6 +368,7 @@ DEFINE_HOOK(554BC5, MapDimGate_Site3, 6)
 //  cell decoders (mouse-click / triggers / forest-fire) added on top of this.
 DEFINE_HOOK(68BE0C, Waypoint_CoordBaseDecode, 5)
 {
+    if (!g_Active) return 0;
     int base = 1000;
     if (g_MapStride > 512)
     {
@@ -407,6 +426,7 @@ DEFINE_HOOK(68BE0C, Waypoint_CoordBaseDecode, 5)
 //  Logs once. Gated stride>512 so it is a strict no-op on vanilla-size play.
 DEFINE_HOOK(687410, Spawn_WaypointDiag, 6)
 {
+    if (!g_Active) return 0;
     if (g_MapStride > 512 && g_DiagVerbose)
     {
         static int calls = 0;
@@ -450,6 +470,7 @@ DEFINE_HOOK(687410, Spawn_WaypointDiag, 6)
 // engine's empty-slot sentinel X is the word at 0xB05458; we flag matches.
 DEFINE_HOOK(68839A, Spawn_AssignerDiag, 6)
 {
+    if (!g_Active) return 0;
     if (g_MapStride > 512 && g_DiagVerbose)
     {
         static int calls = 0;
@@ -502,6 +523,13 @@ DEFINE_HOOK(68839A, Spawn_AssignerDiag, 6)
 //  struct ([+4]=COUNT, [+8]=buffer). Resume 0x722E15 (fill) with eax=0, else 0x722E28.
 DEFINE_HOOK(722E0F, Tiberium_BufferFillGuard, 6)
 {
+    // Inert: replay the stolen `xor eax,eax ; cmp ecx,ebx ; jl 0x722E28` (the
+    // relative jl cannot be replayed by Syringe). Both targets reset the flags.
+    if (!g_Active)
+    {
+        R->EAX(0);
+        return R->ECX<int>() < R->EBX<int>() ? 0x722E28 : 0x722E15;
+    }
     char* self  = reinterpret_cast<char*>(R->ESI());
     int   count = *reinterpret_cast<int*>(self + 4);
     void* buf   = *reinterpret_cast<void**>(self + 8);
@@ -591,6 +619,7 @@ static bool RadarSurfacesMissing()
 
 DEFINE_HOOK(657CE0, RadarClass_MinimapChanged_NullGuard, 5)
 {
+    if (!g_Active) return 0;
     if (RadarSurfacesMissing())
         return 0x657D3C;                // bare `ret` -> clean skip instead of a null deref
     return 0;                           // surfaces exist -> run normally
@@ -609,6 +638,7 @@ DEFINE_HOOK(657CE0, RadarClass_MinimapChanged_NullGuard, 5)
 // ============================================================
 DEFINE_HOOK(656EC0, RadarClass_UpdateMinimap_NullGuard, 5)
 {
+    if (!g_Active) return 0;
     if (RadarSurfacesMissing())
         return 0x657D3C;                // bare `ret` -> clean skip instead of a null deref
     return 0;
@@ -629,6 +659,7 @@ DEFINE_HOOK(656EC0, RadarClass_UpdateMinimap_NullGuard, 5)
 // ============================================================
 DEFINE_HOOK(70D990, Object_PlotOnRadar_NullGuard, 6)
 {
+    if (!g_Active) return 0;
     // g_RadarScale, NOT the stride: 0x880A04 is never written by ANY module, so
     // this guard fires whenever it is armed. Keyed off the stride it disabled
     // object blip plotting on every map at Stride=2048 -- blips never drawn or
@@ -723,6 +754,7 @@ static void FactoryVtableSentinel()
 // cell is wrongly seen as occupied/impassable.
 DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
 {
+    if (!g_Active) return 0;
     // Fire LATER (not the first deploy check at game start, before the camera
     // has drawn the MCV area) so the tactical draw has run over the MCV. Fires
     // once, ~the 900th deploy check (a while into play / after panning).
@@ -818,6 +850,7 @@ DEFINE_HOOK(700D6F, CanDeploySlashUnload_Diag, 5)
 // ============================================================
 DEFINE_HOOK(567F34, RevealArea2_ShroudWrite_Diag, 6)
 {
+    if (!g_Active) return 0;
     if (false)   // disabled: this path did not fire; keep hook inert
     {
         DWORD cell = R->EBX();
@@ -868,6 +901,7 @@ DEFINE_HOOK(567F34, RevealArea2_ShroudWrite_Diag, 6)
 // `lea`, resuming at 0x660547 (`push ebx`).
 DEFINE_HOOK(660540, RadarEvent_Erase_NullGuard, 7)
 {
+    if (!g_Active) return 0;
     const DWORD s = *reinterpret_cast<DWORD*>(0x00880A04);
 
     static bool logged = false;
@@ -957,18 +991,21 @@ static void LogSentinelFail(const char* site, DWORD packed, DWORD caller)
 }
 DEFINE_HOOK(565712, CellLookup_Fail_OpCell, 6)
 {
+    if (!g_Active) return 0;
     if (g_MapStride > 512)
         LogSentinelFail("op[]", R->EDX(), *reinterpret_cast<DWORD*>(R->ESP() + 4));
     return 0;
 }
 DEFINE_HOOK(565789, CellLookup_Fail_OpLepton, 6)
 {
+    if (!g_Active) return 0;
     if (g_MapStride > 512)
         LogSentinelFail("lep ", R->EDX(), *reinterpret_cast<DWORD*>(R->ESP() + 4));
     return 0;
 }
 DEFINE_HOOK(5657CF, CellLookup_Fail_GetCellAt, 6)
 {
+    if (!g_Active) return 0;
     if (g_MapStride > 512)
         LogSentinelFail("gca ", R->EDX(), *reinterpret_cast<DWORD*>(R->ESP()));
     return 0;
@@ -986,6 +1023,7 @@ DEFINE_HOOK(5657CF, CellLookup_Fail_GetCellAt, 6)
 //  overflow just reuses the top slot (path may fail) instead of corrupting heap.
 DEFINE_HOOK(42A466, AStar_PoolACap, 6)
 {
+    if (!g_Active) return 0;
     // Widened pools (VirtualAlloc + ApplyAStarPoolPatches): counter now at
     // +0x400000, capacity 262,144 nodes. Cap stays as a last-resort guard.
     if (g_MapStride <= 512) return 0;   // vanilla path untouched
@@ -996,6 +1034,7 @@ DEFINE_HOOK(42A466, AStar_PoolACap, 6)
 }
 DEFINE_HOOK(42A482, AStar_PoolBCap, 6)
 {
+    if (!g_Active) return 0;
     if (g_MapStride <= 512) return 0;   // vanilla path untouched
     DWORD cnt = *reinterpret_cast<DWORD*>(R->EAX() + 0x600000);
     if (cnt > 0x7FFFE) cnt = 0x7FFFE;
@@ -1028,6 +1067,7 @@ DEFINE_HOOK(42A482, AStar_PoolBCap, 6)
 //  reloaded with 0x818A0C at 0x5270F0), so clobbering it is safe.
 DEFINE_HOOK(5270C5, INI_SectionEntryByIndex_Memo, 5)
 {
+    if (!g_Active) return 0;
     const DWORD section = R->EAX();
     const int   idx     = R->ESI<int>();
     static DWORD cSection = 0;
@@ -1072,6 +1112,7 @@ DEFINE_HOOK(5270C5, INI_SectionEntryByIndex_Memo, 5)
 //  Idempotent (already-patched sites no longer read shl 9) and stride-gated.
 DEFINE_HOOK(6BB9A0, MapSizeExt_LateDllScan, 5)
 {
+    if (!g_Active) return 0;
     // Every DLL injected after us is loaded by now, so re-snapshot the module
     // table the crash watcher attributes addresses against. Unconditional:
     // the watcher is useful at stride 512 too.
@@ -1123,6 +1164,7 @@ DEFINE_HOOK(6BB9A0, MapSizeExt_LateDllScan, 5)
 //  Kept only as a kill switch: [Debug] RadarEvents=0 brings it back.
 DEFINE_HOOK(65FA70, RadarEvent_Suppress_BigStride, 6)
 {
+    if (!g_Active) return 0;
     if (g_RadarScale <= 1 || g_RadarEvents) return 0;   // draw normally
     struct VirtEvent { int type; int x; int y; DWORD frame; };
     static VirtEvent ring[16];
@@ -1165,23 +1207,32 @@ DEFINE_HOOK(65FA70, RadarEvent_Suppress_BigStride, 6)
 //  new zero-filled buffer and resumes at the `add esp,4` that follows, so the
 //  pushed size arg is popped normally. Paired with the byte patches; both are
 //  stride-gated so 512 stays fully vanilla.
+//  Inert: the stolen bytes ARE the relative
+//  `call 0x7C8E17`, which `return 0` would replay unrelocated into garbage --
+//  so make the original call ourselves with the size the caller pushed.
+static DWORD VanillaPoolNew(REGISTERS* R)
+{
+    typedef void* (__cdecl* NewFn)(size_t);                      // the game's operator new
+    const size_t size = *reinterpret_cast<DWORD*>(R->ESP());     // pushed just before the call
+    return reinterpret_cast<DWORD>(reinterpret_cast<NewFn>(0x7C8E17)(size));
+}
 DEFINE_HOOK(42A7E8, AStar_PoolA_VAlloc, 5)     // pool A: 65,536 -> 262,144 nodes
 {
-    if (g_MapStride <= 512) return 0;
+    if (!g_Active) { R->EAX(VanillaPoolNew(R)); return 0x42A7ED; }
     R->EAX(reinterpret_cast<DWORD>(
         VirtualAlloc(nullptr, 0x400000 + 4, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)));
     return 0x42A7ED;
 }
 DEFINE_HOOK(42A81C, AStar_PoolB_VAlloc, 5)     // pool B: 131,072 -> 524,288 nodes
 {
-    if (g_MapStride <= 512) return 0;
+    if (!g_Active) { R->EAX(VanillaPoolNew(R)); return 0x42A821; }
     R->EAX(reinterpret_cast<DWORD>(
         VirtualAlloc(nullptr, 0x600000 + 4, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)));
     return 0x42A821;
 }
 DEFINE_HOOK(42A8E5, AStar_HierPool_VAlloc, 5)  // hier pool: 10,000 -> 80,000 nodes
 {
-    if (g_MapStride <= 512) return 0;
+    if (!g_Active) { R->EAX(VanillaPoolNew(R)); return 0x42A8EA; }
     R->EAX(reinterpret_cast<DWORD>(
         VirtualAlloc(nullptr, 0x138800, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)));
     return 0x42A8EA;
@@ -1205,6 +1256,7 @@ DEFINE_HOOK(42A8E5, AStar_HierPool_VAlloc, 5)  // hier pool: 10,000 -> 80,000 no
 //  (with the cap) and resume at the store-back @0x42C71E. NO-OP at 512.
 DEFINE_HOOK(42C712, AStar_HierNodePoolCap, 8)
 {
+    if (!g_Active) return 0;
     DWORD cnt = *reinterpret_cast<DWORD*>(R->ESP() + 0x2C);
     DWORD off = *reinterpret_cast<DWORD*>(R->ESP() + 0x30);
     if (g_MapStride > 512 && cnt >= 79999)
@@ -1271,6 +1323,7 @@ static bool TraceBudget()
 // resume at the return sequence.
 DEFINE_HOOK(6E6AE4, CellTarget_Encode0_CoordBase, 5)
 {
+    if (!g_Active) return 0;
     if (g_CoordBase <= 1000) return 0;
     const DWORD y = R->ECX() / 125;                       // lea chain: ecx = 125*Y
     const DWORD N = R->EDX() + y * (DWORD)g_CoordBase;    // edx = X
@@ -1280,6 +1333,7 @@ DEFINE_HOOK(6E6AE4, CellTarget_Encode0_CoordBase, 5)
 }
 DEFINE_HOOK(6E6B51, CellTarget_Encode1_CoordBase, 6)
 {
+    if (!g_Active) return 0;
     if (g_CoordBase <= 1000) return 0;
     const DWORD y = R->ECX(), x = R->EDX();
     if (TraceBudget())
@@ -1289,6 +1343,7 @@ DEFINE_HOOK(6E6B51, CellTarget_Encode1_CoordBase, 6)
 }
 DEFINE_HOOK(6E6B89, CellTarget_Encode2_CoordBase, 6)
 {
+    if (!g_Active) return 0;
     if (g_CoordBase <= 1000) return 0;
     const int y = (int)R->EAX();
     if (TraceBudget())
@@ -1327,6 +1382,7 @@ static void ClampCellToMap(int& rx, int& ry)
 }
 DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
 {
+    if (!g_Active) return 0;
     if (g_CoordBase <= 1000) return 0;
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
     int rx = (int)(N % b), ry = (int)(N / b);
@@ -1370,6 +1426,7 @@ DEFINE_HOOK(6E6ED6, CellTarget_Decode1_CoordBase, 5)
 }
 DEFINE_HOOK(6E7C2C, CellTarget_Decode2_CoordBase, 5)
 {
+    if (!g_Active) return 0;
     if (g_CoordBase <= 1000) return 0;
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
     int rx = (int)(N % b), ry = (int)(N / b);
@@ -1409,6 +1466,7 @@ DEFINE_HOOK(6E7C2C, CellTarget_Decode2_CoordBase, 5)
 //  order-related.)
 DEFINE_HOOK(4AD232, CellNum_Decode_Display_CoordBase, 5)
 {
+    if (!g_Active) return 0;
     if (g_CoordBase <= 1000) return 0;
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
     if (TraceBudget()) DeployDiagLog("DSP  %u -> (%u,%u)\n", N, N % b, N / b);
@@ -1418,6 +1476,7 @@ DEFINE_HOOK(4AD232, CellNum_Decode_Display_CoordBase, 5)
 }
 DEFINE_HOOK(4ADC17, CellNum_Decode_WaypointList_CoordBase, 5)
 {
+    if (!g_Active) return 0;
     if (g_CoordBase <= 1000) return 0;
     const unsigned N = R->ECX(), b = (unsigned)g_CoordBase;
     R->ESI(R->ESI() + 4);                                          // replicate skipped add esi,4
@@ -1439,6 +1498,7 @@ DEFINE_HOOK(4ADC17, CellNum_Decode_WaypointList_CoordBase, 5)
 //  the base-1000 dword's position + caller identifies the encoder directly.
 DEFINE_HOOK(55BAA0, EventQueue_Add_Trace, 5)
 {
+    if (!g_Active) return 0;
     if (g_MapStride > 512)
     {
         static int n = 0;
@@ -1514,6 +1574,7 @@ static void LogDummyDestWrite(DWORD site, DWORD value, DWORD obj, DWORD esp)
 #define DEST_WRITE_HOOK(addr, objreg, valreg)                                  \
 DEFINE_HOOK(addr, DestWrite_##addr, 6)                                         \
 {                                                                              \
+    if (!g_Active) return 0;                                                   \
     if (g_MapStride > 512)                                                     \
         LogDummyDestWrite(0x##addr, R->valreg(), R->objreg(), R->ESP());       \
     return 0;                                                                  \
@@ -1534,6 +1595,7 @@ DEST_WRITE_HOOK(73A4E9, EBP, EAX)
 
 DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 {
+    if (!g_Active) return 0;
     if (g_MapStride > 512)
     {
         DumpMapStateOnce();           // one-shot dimension dump (was on the lepton hook)
@@ -1591,6 +1653,7 @@ DEFINE_HOOK(4D3920, UpdatePathfinding_Diag, 5)
 //  stride 512 and for maps with <=0x7FFF subzones (the cap never triggers).
 DEFINE_HOOK(58215B, Subzone_SaturateID, 5)   // mov cx,[esp+0x10]
 {
+    if (!g_Active) return 0;
     if (g_MapStride > 512)
     {
         DWORD id = *reinterpret_cast<DWORD*>(R->ESP() + 0x10);
@@ -1626,6 +1689,7 @@ DEFINE_HOOK(58215B, Subzone_SaturateID, 5)   // mov cx,[esp+0x10]
 // ============================================================
 DEFINE_HOOK(47F908, OverlayP1_Diag, 6)
 {
+    if (!g_Active) return 0;
     static int fires = 0;
     if (g_MapStride > 512 && fires < 60)
     {
@@ -1650,6 +1714,7 @@ DEFINE_HOOK(47F908, OverlayP1_Diag, 6)
 
 DEFINE_HOOK(47F96A, OverlayP2_Diag, 6)
 {
+    if (!g_Active) return 0;
     static int fires = 0;
     if (g_MapStride > 512 && fires < 60)
     {

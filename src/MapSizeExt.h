@@ -71,6 +71,14 @@ extern int g_MapMaxH;           // max map height (default 512)
 extern int g_MapMaxDimension;   // per-axis gate: replaces cmp ax,0x200.
 extern int g_CrashGuard;        // 1 = GetCellAt garbage-slot guard active (INI PatchCrashGuard)
 
+// 0 = the map this launch loads fits the vanilla 512 grid: Main.cpp applied no
+// patches, and every hook must leave the game exactly as it would be without
+// this DLL. Hooks whose stolen bytes replay cleanly just `return 0`; the few
+// whose stolen bytes hold a relative branch/call (or end mid-instruction)
+// replay the original instructions themselves, because classic Syringe copies
+// stolen bytes unrelocated. Set once in DllMain, before Syringe writes hooks.
+extern int g_Active;
+
 // Per-map cell-number packing base. Vanilla map INIs pack a cell as N = Y*1000 + X
 // (base 1000), which caps the low coord (iso rx) below 1000 -> W+H <= 1000 (~500x500)
 // regardless of stride. Big maps carry a [MapSizeExt] CoordBase=<pow2> key and pack

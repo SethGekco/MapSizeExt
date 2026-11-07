@@ -49,15 +49,23 @@ No log = Syringe didn't inject the DLL (check step 2).
 
 ```ini
 [MapSize]
-Stride=1024        ; cell-grid row stride (power of two). 512 = vanilla no-op.
-MaxDimension=1024  ; per-axis map size gate (replaces the engine's cmp ax,512)
+Auto=1             ; pick the stride per launch from the map (default)
+Stride=1024        ; cell-grid row stride when Auto=0 (power of two). 512 = vanilla no-op.
+MaxDimension=1024  ; per-axis map size gate when Auto=0 (replaces the engine's cmp ax,512)
 MaxWidth=512
 MaxHeight=512
 ```
 
-- `Stride=512` makes the whole DLL a **no-op** (vanilla behaviour) — useful to
-  confirm it loads before enabling.
-- `Stride=1024` → maps up to **512×512** (the tested milestone).
+- `Auto=1` (default) reads `[Map] Size` from the scenario the spawner loads
+  (`spawn.ini` `Scenario=`, normally `spawnmap.ini`, which the client writes
+  before the game starts). A map that fits vanilla — `W+H ≤ 512` and an
+  `[IsoMapPack5]` of at most 512,000 decoded bytes — gets **no patches at all**,
+  and every hook passes straight through, so the DLL can stay in the launch list
+  for normal games. Bigger maps get the smallest stride that holds them (1024 or
+  2048). The first line of `MapSizeExt.log` states the decision. Saved-game loads
+  and maps read from a MIX count as vanilla-size; use `Auto=0` to force a stride.
+- With `Auto=0`, `Stride=512` makes the whole DLL a **no-op** (vanilla
+  behaviour) and `Stride=1024` → maps up to **512×512**.
 - The `[Debug]` section exposes per-patch-group toggles for bisecting problems
   without a rebuild; leave them at their defaults unless you're debugging.
 
