@@ -1287,19 +1287,25 @@ DEFINE_HOOK(42C712, AStar_HierNodePoolCap, 8)
 //  2,000-step path; the widened pools above let a cross-map path finish, and
 //  step 2,000 (a facing 0..7) became the return address. Measured Length
 //  2,013 and 2,085. The other A* caller (HouseClass @0x5048A0) has ~2,048
-//  slots, so 2,000 covers both.
+//  slots, so one cap covers both.
+//  The cap is NOT 2,000: after the builder, the optimizer @0x42B7F0 compacts
+//  the moves and fills -1 from the new end through index Length INCLUSIVE
+//  (`cmp ebx, Length+1` @0x42BC70), so a path needs Length+1 slots. A cap of
+//  2,000 still crashed (2026-11-07 run L-2: PathType Length 2,000, buf[1999]
+//  and buf[2000] = -1, EIP FFFFFFFF). 1,999 is the exact limit; 1,990 leaves
+//  headroom for the optimizer's segment rewrite @0x42BE20, not traced.
 //    0x42AAFC  mov ebp,[esi]      ; goal-end list element (stolen)
 //    0x42AAFE  mov eax,[esi+0xC]  ; Length (stolen)
 //    0x42AB01  mov ebx,[ebp+0x8]  ; resume
 //  ESI = path node, EDX = caller's buffer. Elements link toward the start via
 //  [elem+8]; the loop writes index Length-2 (the step into the goal) down to
-//  0. Dropping the first (Length-2000) goal-end elements keeps the 1,999
-//  steps from the unit's cell; it walks them and re-paths, and
+//  0. Dropping the first (Length-cap) goal-end elements keeps the first
+//  cap-1 steps from the unit's cell; it walks them and re-paths, and
 //  UpdatePathfinding only takes 24 steps per call anyway. Length is written
 //  back to the node (the terminator @0x42ABAF re-reads [esi+0xC]) and to the
 //  PathType copy @0x89A2E0, already filled @0x42AAD7. Nothing branches into
 //  0x42AAFD-0x42AB00 and the stolen bytes are not relative. NO-OP at 512.
-static const int kMaxPathSteps = 2000;
+static const int kMaxPathSteps = 1990;
 DEFINE_HOOK(42AAFC, AStar_BuildPath_LengthCap, 5)
 {
     if (!g_Active) return 0;

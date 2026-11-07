@@ -2,6 +2,21 @@
 
 Newest first. Older history is in `git log` and `docs/HANDOFF.md`.
 
+## Unreleased — path cap lowered to 1,990 steps (the 2,000 cap still crashed)
+
+**Why:** with the 2,000 cap, a 30-player 1000x1000 game crashed at 1,163 s with
+`C0000005 at FFFFFFFF`, at the same place as before (2026-11-07, run L-2). The
+crash dump showed the cap had worked (Length 2,000), but the path optimizer
+(@0x42B7F0) then fills -1 through index `Length` inclusive. That is one slot
+more than the path, so index 2,000 (the return address) became -1.
+
+**What:** `AStar_BuildPath_LengthCap` now caps at 1,990 steps. 1,999 is the
+exact limit; the extra slots leave room for a segment rewrite inside the
+optimizer (@0x42BE20) that has not been traced. `PATHCAP` log lines now read
+`Length N -> 1990`.
+
+**Consumer action:** none.
+
 ## Unreleased — paths capped at 2,000 steps on big maps
 
 **Why:** 30-player games on `mapsizeext_1000x1000.map` crashed after 8-12
