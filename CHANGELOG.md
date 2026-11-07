@@ -70,4 +70,10 @@ Also fixed in passing: at stride 512 the A* pool hooks returned 0 over their
 stolen `call 0x7C8E17`, a wild jump under classic Syringe.
 
 **Consumer action:** none; `Auto` defaults to 1, so existing INIs switch to
-per-map strides. Verified in-game: see the entry's commit message / follow-up.
+per-map strides.
+
+**Verified in-game (2026-11-06, full 31-DLL launch list, with the threat-grid fix
+above):** Dune Patrol 98x85 logged "fits vanilla -> NO patches" and a live memory
+dump showed no MapSizeExt byte written; 1000x1000 with 8 players ran 866 s clean;
+1000x1000 with 30 players ran to the normal end of the game (frame 12,652, 4.8x
+past the pre-fix crash) at 1.69 GB private, 976 MB address space free.
