@@ -43,6 +43,7 @@ int g_RadarScale      = 1;
 int g_RadarEvents     = 1;       // [Debug] RadarEvents: 0 = suppress pulses on big maps       // 1 = radar surface untouched (vanilla behaviour)
 int g_DiagVerbose     = 0;       // hot per-call trace logs off by default (file I/O = lag)
 int g_ReuseSteps      = 0;       // [Path] ReuseSteps: path continuation window, 0 = off
+int g_ReuseABPeriod   = 0;       // [Path] ABPeriod: test knob, hand-outs only in even N-frame blocks
 
 // ============================================================
 //  HOOK A: MapClass::operator[](Cell&)  @ 0x5656EA (7 bytes)
@@ -1436,6 +1437,7 @@ DEFINE_HOOK(4CBBF8, FindPath_ContinueRoute, A)
                       "loco-clears %u\n", g_Reuse.calls, g_Reuse.served, g_Reuse.sameCell, g_Reuse.stored,
                       g_Reuse.kept, g_Reuse.none, g_Reuse.dest, g_Reuse.blocked, g_Reuse.offRoute,
                       g_Reuse.noProgress, g_Reuse.evicted, g_Reuse.wipes, g_Reuse.locoClears);
+    if (g_ReuseABPeriod > 0 && (GameFrame() / g_ReuseABPeriod) & 1) return 0;   // test: off block
     const DWORD esp = R->ESP();
     if (*reinterpret_cast<int*>(esp + 0x30) != 0) { ++g_Reuse.kept; return 0; }
     PathMemo* m = FindMemo(*reinterpret_cast<DWORD*>(R->ESI() + 0x10));

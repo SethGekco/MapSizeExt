@@ -61,6 +61,7 @@ struct MapSizeConfig
     int AntaresIniFix;
     int RadarEvents;
     int ReuseSteps;     // [Path] ReuseSteps: path continuation window (Hooks.cpp), 0 = off
+    int ReuseABPeriod;  // [Path] ABPeriod: test knob, hand-outs only in even blocks of N frames
 
     int Total() const { return Stride * Stride; }
 };
@@ -120,6 +121,10 @@ inline MapSizeConfig ReadConfig()
     // out per search). 0 = off (default until measured in-game). Every player
     // in a game needs the same value.
     cfg.ReuseSteps     = GetPrivateProfileIntA("Path",  "ReuseSteps",     0, iniPath);
+    // Test knob for measuring ReuseSteps inside one game: with ABPeriod=N > 0,
+    // hand-outs happen only in even blocks of N game frames (0-N on, N-2N off,
+    // ...). 0 = always (default). Not for real games.
+    cfg.ReuseABPeriod  = GetPrivateProfileIntA("Path",  "ABPeriod",       0, iniPath);
 
     // Clamp: never go below the vanilla values.
     if (cfg.Stride       < 512) cfg.Stride       = 512;

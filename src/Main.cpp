@@ -168,6 +168,7 @@ static void ApplyInit()
     g_DiagVerbose     = cfg.DiagVerbose;
     g_RadarEvents     = cfg.RadarEvents;
     g_ReuseSteps      = cfg.ReuseSteps < 0 ? 0 : cfg.ReuseSteps;
+    g_ReuseABPeriod   = cfg.ReuseABPeriod < 0 ? 0 : cfg.ReuseABPeriod;
     g_CuratedBase     = cfg.CuratedBase;
 
     char logPath[MAX_PATH];
@@ -211,7 +212,9 @@ static void ApplyInit()
                 cfg.PatchStride, cfg.PatchBounds, cfg.PatchBoundsCmp, cfg.PatchRootWH, cfg.PatchModules, cfg.PatchCoord, cfg.PatchGuard);
         fprintf(f, "IsoMapPack5 buffer patched to %ux%u (%u bytes)\n",
                 isoW, isoH, isoBytes);
-        fprintf(f, "Path continuation: ReuseSteps = %d%s\n", g_ReuseSteps, g_ReuseSteps ? "" : " (off)");
+        fprintf(f, "Path continuation: ReuseSteps = %d%s", g_ReuseSteps, g_ReuseSteps ? "" : " (off)");
+        if (g_ReuseABPeriod) fprintf(f, ", ABPeriod = %d (TEST: hand-outs only in even blocks)", g_ReuseABPeriod);
+        fprintf(f, "\n");
         if (cfg.CuratedBase)
         {
             fprintf(f, "[mode] CuratedBase=1 -> Krisztiaan curated 74-patch conversion; broad sweep SKIPPED\n");

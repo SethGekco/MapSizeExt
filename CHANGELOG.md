@@ -2,6 +2,19 @@
 
 Newest first. Older history is in `git log` and `docs/HANDOFF.md`.
 
+## Unreleased — `[Path] ABPeriod` test knob for measuring path continuation
+
+**Why:** games with identical settings differ 3-5x in logic time per frame at the
+same unit count (2026-11-07 runs M-1..3, Y, Z), so comparing separate games
+cannot give an honest speedup for `ReuseSteps`.
+
+**What:** with `ABPeriod=N > 0`, hand-outs happen only in even blocks of N game
+frames (frames 0..N-1 on, N..2N-1 off, ...); routes are still stored in off
+blocks. Comparing adjacent blocks of one game measures the effect. Default 0
+(always). `MapSizeExt.log` names it when set. Not for real games.
+
+**Consumer action:** none.
+
 ## Unreleased — path continuation: a blocked unit always searches again
 
 **Why:** the walk locomotor ends a unit's path itself when the next cell is
