@@ -2,6 +2,31 @@
 
 Newest first. Older history is in `git log` and `docs/HANDOFF.md`.
 
+## Unreleased — `[Path] DestTolerance` and `ABSteps` (off by default, for measuring)
+
+**Why:** with `ReuseSteps=24`, the A* time left in the A/B game's on blocks
+(path meter, 2026-11-07) was 52% re-plans every 24 cells. Those are units walking
+far with no order re-sends: the game keeps only 24 facings, so it searches the
+whole route again each time they run out. Searches after the target cell moved
+1-2 cells were many (about 31,600) but short and cheap: at most 13% of the A*
+time.
+
+**What:**
+- `DestTolerance=N` (default 0 = off): a unit whose destination cell moved at
+  most N cells on each axis since its route was searched keeps walking that
+  route while at least 32 steps of it are left. Nearer the end it searches for
+  the real destination. The stored destination stays the searched one, so the
+  drift never exceeds N. `PATHREUSE` lines add `near dest` (hand-outs) and
+  `near-end` (refused near the end).
+- `ABSteps=M` (test knob, with `ABPeriod`): the off blocks hand out with
+  `ReuseSteps=M` and no tolerance instead of not at all, so two settings can be
+  compared inside one game.
+
+`ReuseSteps` above 24 already lengthens the re-plan horizon; the code needed no
+change for it.
+
+**Consumer action:** none; defaults are unchanged.
+
 ## Unreleased — path continuation on by default (`[Path] ReuseSteps=24`)
 
 **Why:** measured within one game (2026-11-07, 30 players, 1000x1000,

@@ -90,6 +90,8 @@ extern int g_RadarEvents;      // 1 = draw radar event pulses, 0 = suppress them
 extern int g_DiagVerbose;      // per-call trace logging (PATH/ENC/DEC/REVEAL), default 0
 extern int g_ReuseSteps;       // [Path] ReuseSteps: path continuation window, 0 = off (Hooks.cpp)
 extern int g_ReuseABPeriod;    // [Path] ABPeriod: test knob, hand-outs only in even N-frame blocks
+extern int g_ReuseABSteps;     // [Path] ABSteps: test knob, off blocks use this window, no tolerance
+extern int g_DestTolerance;    // [Path] DestTolerance: hand out when the target cell moved <= N cells
 
 // --- Vanilla [Waypoints] reader cell-number decode (base 1000) ----
 // 68BE0C: mov ebp,0x3e8 ; idiv -> X=N%1000, then Y=N/1000 recomputed via the

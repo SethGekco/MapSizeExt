@@ -44,6 +44,8 @@ int g_RadarEvents     = 1;       // [Debug] RadarEvents: 0 = suppress pulses on 
 int g_DiagVerbose     = 0;       // hot per-call trace logs off by default (file I/O = lag)
 int g_ReuseSteps      = 0;       // [Path] ReuseSteps: path continuation window, 0 = off
 int g_ReuseABPeriod   = 0;       // [Path] ABPeriod: test knob, hand-outs only in even N-frame blocks
+int g_ReuseABSteps    = 0;       // [Path] ABSteps: test knob, off blocks use this window, no tolerance
+int g_DestTolerance   = 0;       // [Path] DestTolerance: hand out when the target cell moved <= N cells
 
 // ============================================================
 //  HOOK A: MapClass::operator[](Cell&)  @ 0x5656EA (7 bytes)
@@ -1370,6 +1372,16 @@ DEFINE_HOOK(42AAFC, AStar_BuildPath_LengthCap, 5)
 //  (UniqueID, cells, frame, order calls), so all clients make the same choices;
 //  every player needs the same DLL and ReuseSteps value.
 //
+//  ReuseSteps above 24 lengthens the re-plan horizon: vanilla searches the whole
+//  route again every 24 cells even when nothing wiped the path (it keeps only 24
+//  facings), and those re-plans were 52% of the A* time left with ReuseSteps=24
+//  (2026-11-07 A/B game, on blocks). DestTolerance=N also hands out when the
+//  destination cell moved at most N cells on each axis from the one the route was
+//  searched for, while at least kNearMinRest steps of the route are left. The
+//  stored destination stays the searched one, so the drift is bounded.
+//  ABPeriod + ABSteps compares two settings inside one game: odd blocks use
+//  ReuseSteps = ABSteps and no tolerance.
+//
 //  Find_Path @0x4CBBA0 (sole caller UpdatePathfinding @0x4D3E4B):
 //    0x4CBBF8  mov ecx,[esp+0x30]     ; kept steps   (stolen; jne target)
 //    0x4CBBFC  lea eax,[esi+0x5E0]    ; &PathDirections (stolen)
@@ -1415,7 +1427,10 @@ struct PathMemo
 };
 static PathMemo* g_PathMemo = nullptr;
 static DWORD g_HandOut[8];   // the PathType a hand-out returns
-static struct { DWORD calls, served, sameCell, stored, kept, none, dest, blocked, offRoute, noProgress, evicted, wipes, locoClears; } g_Reuse;
+static struct { DWORD calls, served, sameCell, nearDest, stored, kept, none, dest, nearEnd, blocked, offRoute, noProgress, evicted, wipes, locoClears; } g_Reuse;
+// A hand-out to a moved destination (DestTolerance) needs at least this many steps left on the
+// old route, so the unit searches for the real destination before its final approach.
+static const int kNearMinRest = 32;
 
 static inline DWORD GameFrame() { return *reinterpret_cast<DWORD*>(0xA8ED84); }
 static inline int MemoFacing(const PathMemo& m, int i) { return (m.dirs[i >> 1] >> ((i & 1) * 4)) & 0xF; }
@@ -1432,24 +1447,44 @@ DEFINE_HOOK(4CBBF8, FindPath_ContinueRoute, A)
 {
     if (!g_Active || g_ReuseSteps <= 0 || !g_PathMemo) return 0;
     if ((++g_Reuse.calls & 0xFFFF) == 0)
-        DeployDiagLog("PATHREUSE calls %u served %u (same cell %u) stored %u | miss: kept %u none %u "
-                      "dest %u blocked %u off-route %u no-progress %u | evicted %u order-wipes %u "
-                      "loco-clears %u\n", g_Reuse.calls, g_Reuse.served, g_Reuse.sameCell, g_Reuse.stored,
-                      g_Reuse.kept, g_Reuse.none, g_Reuse.dest, g_Reuse.blocked, g_Reuse.offRoute,
-                      g_Reuse.noProgress, g_Reuse.evicted, g_Reuse.wipes, g_Reuse.locoClears);
-    if (g_ReuseABPeriod > 0 && (GameFrame() / g_ReuseABPeriod) & 1) return 0;   // test: off block
+        DeployDiagLog("PATHREUSE calls %u served %u (same cell %u, near dest %u) stored %u | miss: kept %u "
+                      "none %u dest %u near-end %u blocked %u off-route %u no-progress %u | evicted %u "
+                      "order-wipes %u loco-clears %u\n", g_Reuse.calls, g_Reuse.served, g_Reuse.sameCell,
+                      g_Reuse.nearDest, g_Reuse.stored, g_Reuse.kept, g_Reuse.none, g_Reuse.dest, g_Reuse.nearEnd,
+                      g_Reuse.blocked, g_Reuse.offRoute, g_Reuse.noProgress, g_Reuse.evicted, g_Reuse.wipes,
+                      g_Reuse.locoClears);
+    int steps = g_ReuseSteps, tolerance = g_DestTolerance;
+    if (g_ReuseABPeriod > 0 && (GameFrame() / g_ReuseABPeriod) & 1)   // test: off block
+    {
+        if (g_ReuseABSteps <= 0) return 0;
+        steps = g_ReuseABSteps;
+        tolerance = 0;
+    }
     const DWORD esp = R->ESP();
     if (*reinterpret_cast<int*>(esp + 0x30) != 0) { ++g_Reuse.kept; return 0; }
     PathMemo* m = FindMemo(*reinterpret_cast<DWORD*>(R->ESI() + 0x10));
     if (!m) { ++g_Reuse.none; return 0; }
-    if (m->dest != **reinterpret_cast<DWORD**>(esp + 0x20)) { ++g_Reuse.dest; return 0; }
+    const DWORD dest = **reinterpret_cast<DWORD**>(esp + 0x20);
+    bool nearDest = false;
+    if (m->dest != dest)
+    {
+        // The target moved a little since the search: keep walking the old route (see kNearMinRest).
+        const int dx = static_cast<short>(dest & 0xFFFF) - static_cast<short>(m->dest & 0xFFFF);
+        const int dy = static_cast<short>(dest >> 16) - static_cast<short>(m->dest >> 16);
+        if (tolerance <= 0 || dx > tolerance || dx < -tolerance || dy > tolerance || dy < -tolerance)
+        {
+            ++g_Reuse.dest;
+            return 0;
+        }
+        nearDest = true;
+    }
     if (m->blocked) { ++g_Reuse.blocked; return 0; }
 
     // Walk the route from its start: is the unit's cell on it, inside the window?
     const DWORD cur = *reinterpret_cast<DWORD*>(esp + 0x8);
     const short* delta = reinterpret_cast<const short*>(0x89F688);   // X,Y per facing
     short x = static_cast<short>(m->start & 0xFFFF), y = static_cast<short>(m->start >> 16);
-    const int window = g_ReuseSteps < m->steps ? g_ReuseSteps : m->steps;
+    const int window = steps < m->steps ? steps : m->steps;
     int j = m->start == cur ? 0 : -1;
     for (int i = 1; j < 0 && i < window; ++i)
     {
@@ -1461,10 +1496,12 @@ DEFINE_HOOK(4CBBF8, FindPath_ContinueRoute, A)
     }
     if (j < 0) { ++g_Reuse.offRoute; return 0; }
     if (j < m->served || (j == m->served && !m->rewiped)) { ++g_Reuse.noProgress; return 0; }
+    const int n = m->steps - j;            // >= 1: j < window <= steps
+    if (nearDest && n < kNearMinRest) { ++g_Reuse.nearEnd; return 0; }
     if (j == m->served) ++g_Reuse.sameCell;
+    if (nearDest) ++g_Reuse.nearDest;
 
     DWORD* buf = reinterpret_cast<DWORD*>(R->EDI());
-    const int n = m->steps - j;            // >= 1: j < window <= steps
     for (int i = 0; i < n; ++i)
         buf[i] = MemoFacing(*m, j + i);
     buf[n] = 0xFFFFFFFF;

@@ -169,6 +169,8 @@ static void ApplyInit()
     g_RadarEvents     = cfg.RadarEvents;
     g_ReuseSteps      = cfg.ReuseSteps < 0 ? 0 : cfg.ReuseSteps;
     g_ReuseABPeriod   = cfg.ReuseABPeriod < 0 ? 0 : cfg.ReuseABPeriod;
+    g_ReuseABSteps    = cfg.ReuseABSteps < 0 ? 0 : cfg.ReuseABSteps;
+    g_DestTolerance   = cfg.DestTolerance < 0 ? 0 : cfg.DestTolerance;
     g_CuratedBase     = cfg.CuratedBase;
 
     char logPath[MAX_PATH];
@@ -212,8 +214,13 @@ static void ApplyInit()
                 cfg.PatchStride, cfg.PatchBounds, cfg.PatchBoundsCmp, cfg.PatchRootWH, cfg.PatchModules, cfg.PatchCoord, cfg.PatchGuard);
         fprintf(f, "IsoMapPack5 buffer patched to %ux%u (%u bytes)\n",
                 isoW, isoH, isoBytes);
-        fprintf(f, "Path continuation: ReuseSteps = %d%s", g_ReuseSteps, g_ReuseSteps ? "" : " (off)");
-        if (g_ReuseABPeriod) fprintf(f, ", ABPeriod = %d (TEST: hand-outs only in even blocks)", g_ReuseABPeriod);
+        fprintf(f, "Path continuation: ReuseSteps = %d%s, DestTolerance = %d", g_ReuseSteps,
+                g_ReuseSteps ? "" : " (off)", g_DestTolerance);
+        if (g_ReuseABPeriod && g_ReuseABSteps)
+            fprintf(f, ", ABPeriod = %d, ABSteps = %d (TEST: odd blocks use ReuseSteps = %d, no tolerance)",
+                    g_ReuseABPeriod, g_ReuseABSteps, g_ReuseABSteps);
+        else if (g_ReuseABPeriod)
+            fprintf(f, ", ABPeriod = %d (TEST: hand-outs only in even blocks)", g_ReuseABPeriod);
         fprintf(f, "\n");
         if (cfg.CuratedBase)
         {

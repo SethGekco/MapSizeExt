@@ -62,6 +62,8 @@ struct MapSizeConfig
     int RadarEvents;
     int ReuseSteps;     // [Path] ReuseSteps: path continuation window (Hooks.cpp), 0 = off
     int ReuseABPeriod;  // [Path] ABPeriod: test knob, hand-outs only in even blocks of N frames
+    int ReuseABSteps;   // [Path] ABSteps: test knob, window for the off blocks (0 = no hand-outs)
+    int DestTolerance;  // [Path] DestTolerance: hand out when the target cell moved <= N cells
 
     int Total() const { return Stride * Stride; }
 };
@@ -126,6 +128,13 @@ inline MapSizeConfig ReadConfig()
     // hand-outs happen only in even blocks of N game frames (0-N on, N-2N off,
     // ...). 0 = always (default). Not for real games.
     cfg.ReuseABPeriod  = GetPrivateProfileIntA("Path",  "ABPeriod",       0, iniPath);
+    // With ABPeriod: the off blocks hand out with ReuseSteps = ABSteps and no
+    // DestTolerance instead of not at all, to compare two settings. 0 = no hand-outs.
+    cfg.ReuseABSteps   = GetPrivateProfileIntA("Path",  "ABSteps",        0, iniPath);
+    // A unit whose target cell moved at most this many cells (on each axis) since
+    // its last search keeps walking the old route while at least 32 steps of it
+    // are left; nearer the end it searches for the real destination. 0 = off.
+    cfg.DestTolerance  = GetPrivateProfileIntA("Path",  "DestTolerance",  0, iniPath);
 
     // Clamp: never go below the vanilla values.
     if (cfg.Stride       < 512) cfg.Stride       = 512;
