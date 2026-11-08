@@ -118,9 +118,10 @@ inline MapSizeConfig ReadConfig()
     // Path continuation on big maps: a unit whose route was wiped while it
     // walks it gets the rest of that route back instead of a new search, for
     // the first ReuseSteps cells after a search (24 = the steps the game hands
-    // out per search). 0 = off (default until measured in-game). Every player
-    // in a game needs the same value.
-    cfg.ReuseSteps     = GetPrivateProfileIntA("Path",  "ReuseSteps",     0, iniPath);
+    // out per search). Default 24 (measured 2026-11-07: logic time per frame
+    // 1.14x higher with it off, same game); 0 = off. Every player in a game
+    // needs the same value.
+    cfg.ReuseSteps     = GetPrivateProfileIntA("Path",  "ReuseSteps",    24, iniPath);
     // Test knob for measuring ReuseSteps inside one game: with ABPeriod=N > 0,
     // hand-outs happen only in even blocks of N game frames (0-N on, N-2N off,
     // ...). 0 = always (default). Not for real games.

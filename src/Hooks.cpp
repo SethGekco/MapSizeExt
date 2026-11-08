@@ -1338,7 +1338,7 @@ DEFINE_HOOK(42AAFC, AStar_BuildPath_LengthCap, 5)
 }
 
 // ============================================================
-//  PATH CONTINUATION ([Path] ReuseSteps=24; default 0 = off; big maps only). Speed.
+//  PATH CONTINUATION ([Path] ReuseSteps, default 24; 0 = off; big maps only). Speed.
 //
 //  Measured 2026-11-07 (30 players on 1000x1000, PerfExt profiles and path
 //  meter): unit pathfinding took 52-58% of the game thread in 30-minute

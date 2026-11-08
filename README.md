@@ -68,15 +68,16 @@ MaxHeight=512
   behaviour) and `Stride=1024` → maps up to **512×512**.
 - The `[Debug]` section exposes per-patch-group toggles for bisecting problems
   without a rebuild; leave them at their defaults unless you're debugging.
-- `[Path] ReuseSteps=24` turns on path continuation on big maps (default 0 =
-  off). Infantry chasing a far target get their orders re-sent about once per
+- `[Path] ReuseSteps=24` (default) is path continuation on big maps; `0` turns
+  it off. Infantry chasing a far target get their orders re-sent about once per
   cell, and each re-send makes the game search the whole route again; that was
   over half the game thread in 30-player 1000×1000 games. With it on, a unit
   still on its last route gets the rest of that route instead of a new search,
   for 24 cells after each search (the game's own re-plan distance), as long as
   it moved along the route or an order re-send ended its path. A unit whose
-  path ended because it was blocked searches as before. Every player in a game
-  must use the same value.
+  path ended because it was blocked searches as before. Measured within one
+  30-player game, logic time per frame was 1.14x higher with it off. Every
+  player in a game must use the same value.
 
 ## Limits
 

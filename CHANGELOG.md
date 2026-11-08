@@ -2,6 +2,25 @@
 
 Newest first. Older history is in `git log` and `docs/HANDOFF.md`.
 
+## Unreleased — path continuation on by default (`[Path] ReuseSteps=24`)
+
+**Why:** measured within one game (2026-11-07, 30 players, 1000x1000,
+`ABPeriod=300`: hand-outs on and off in alternating 300-frame blocks). Each off
+block was compared with the mean of the on blocks on either side. In all 7
+usable pairs (blocks 11-23, 2,000-6,900 technos) logic time per frame was
+higher with continuation off: median 1.14x, range 1.03-1.20. The same split on
+runs without an A/B gives a median of 0.97-1.01. Time inside the cell A* fell
+from 15.9 to 8.9 ms per frame. The opening of that game handed out only 18-27%
+of asks (half the misses were a destination that moved), against 61-70% in
+earlier runs, so this is the low end. The A/B game ended normally at 424 s (the
+human seat was defeated); an earlier full 30-minute run with it on did not crash.
+
+**What:** `ReuseSteps` defaults to 24. Big maps only; vanilla-size maps are
+untouched as before.
+
+**Consumer action:** none. `[Path] ReuseSteps=0` turns it off. Every player in
+a big-map multiplayer game needs the same DLL and value.
+
 ## Unreleased — `[Path] ABPeriod` test knob for measuring path continuation
 
 **Why:** games with identical settings differ 3-5x in logic time per frame at the
